@@ -11,6 +11,13 @@ from datasets import load_dataset
 from tokenizers import Tokenizer, models, trainers, pre_tokenizers, decoders
 from tqdm import tqdm
 import structlog
+import os
+
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
 
 @dataclass
 class Hyperparameters:
@@ -76,6 +83,20 @@ def configure_logging(log_file: str):
     return DualLogger(file_handler)
 
 logger = None
+
+BEST_CKPT_PATH = Path("checkpoints/best.pt")
+
+def save_checkpoint_atomic(model, hyperparams, step, val_loss, path):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    torch.save({
+        "model_state": model.state_dict(),
+        "config": vars(hyperparams),
+        "step": step,
+        "val_loss": val_loss,
+    }, tmp)
+    tmp.replace(path)
 
 def get_titles(num_titles: int, seed: int, val_frac: float) -> str:
     ds = load_dataset("julien040/hacker-news-posts", split="train", cache_dir="./data").shuffle(seed=seed)
@@ -231,6 +252,17 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.log("device_info", device=device)
 
+    if WANDB_AVAILABLE:
+        wandb_mode = "online" if os.environ.get("WANDB_API_KEY") else "disabled"
+        run = wandb.init(
+            project="mainrun-sandbox",
+            config=hyperparams_dict,
+            mode=wandb_mode,
+            settings=wandb.Settings(silent=True),
+        )
+    else:
+        run = None
+
     train_titles, val_titles = get_titles(args.num_titles, args.seed, args.val_frac)
     
     eos_token = "<eos>"
@@ -279,6 +311,8 @@ def main():
 
     ptr = 0
     step = 0
+    best_val_loss = float("inf")
+    best_step = 0
     t0 = time.time()
     for epoch in range(1, args.epochs + 1):
         for _ in tqdm(range(1, batches + 1), desc=f"Epoch {epoch}/{args.epochs}"):
@@ -298,6 +332,11 @@ def main():
                       loss=loss.item(),
                       elapsed_time=elapsed,
                       prnt=False)
+            if run is not None:
+                run.log({
+                    "train/loss": loss.item(),
+                    "train/lr": scheduler.get_last_lr()[0],
+                }, step=step)
 
             if step == 1 or step % eval_interval == 0 or step == max_steps:
                 val_loss = evaluate()
@@ -306,6 +345,21 @@ def main():
                           max_steps=max_steps,
                           loss=val_loss,
                           elapsed_time=elapsed)
+                if run is not None:
+                    run.log({"val/loss": val_loss, "val/epoch": epoch}, step=step)
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    best_step = step
+                    save_checkpoint_atomic(model, args, step, val_loss, BEST_CKPT_PATH)
+
+    if run is not None and BEST_CKPT_PATH.exists():
+        artifact = wandb.Artifact(
+            name=f"model-{run.id}",
+            type="model",
+            metadata={"val_loss": best_val_loss, "step": best_step, **hyperparams_dict},
+        )
+        artifact.add_file(str(BEST_CKPT_PATH))
+        run.log_artifact(artifact, aliases=["latest", "best"])
 
 if __name__ == "__main__":
     try:
@@ -313,3 +367,5 @@ if __name__ == "__main__":
     finally:
         if logger and hasattr(logger, 'file_handler'):
             logger.file_handler.close()
+        if WANDB_AVAILABLE:
+            wandb.finish()

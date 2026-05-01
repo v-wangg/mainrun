@@ -1,4 +1,7 @@
 mainrun/data/
+mainrun/checkpoints/
+
+wandb/
 
 __pycache__/
 *.py[cod]
