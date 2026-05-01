@@ -1,0 +1,8 @@
+.git
+.gitignore
+node_modules
+mainrun/data
+mainrun/logs
+*.log
+submission.zip
+.DS_Store

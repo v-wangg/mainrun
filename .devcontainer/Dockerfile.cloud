@@ -1,0 +1,60 @@
+# Dockerfile.cloud — cloud-GPU sibling of .devcontainer/Dockerfile.
+# Works on any provider that runs OCI containers and exposes a port for SSH
+# (Vast.ai, RunPod, Lambda, etc.). Mirrors the canonical Dockerfile exactly,
+# then adds:
+#   1. openssh-server + gh in the apt list
+#   2. Claude Code CLI installed globally via npm
+#   3. sshd config (allow root login, disable password auth)
+#   4. cloud-start.sh as CMD (injects $PUBLIC_KEY, starts sshd, sleeps)
+# We duplicate rather than `FROM canonical-base` because the canonical
+# Dockerfile is owned by Maincode and frozen for the assessment.
+# If the canonical Dockerfile ever changes, mirror the change here.
+
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Same apt list as canonical, plus openssh-server and gh (GitHub CLI).
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    curl \
+    wget \
+    git \
+    jq \
+    zip \
+    build-essential \
+    ca-certificates \
+    sudo \
+    openssh-server \
+    gnupg \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y gh \
+    && apt-get clean
+
+RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
+    && apt-get update && apt-get install -y nodejs
+
+RUN sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
+
+# Canonical installs zx; we also install Claude Code CLI so `claude` is on PATH.
+RUN npm install -g zx @anthropic-ai/claude-code
+
+COPY .devcontainer/requirements.txt* /tmp/
+RUN if [ -f /tmp/requirements.txt ]; then pip3 install --no-cache-dir -r /tmp/requirements.txt; fi
+
+RUN echo "devcontainer" >> /root/.mainrun
+
+# SSH config + entrypoint (the only meaningful delta from canonical).
+RUN mkdir /var/run/sshd && \
+    sed -i 's/#PermitRootLogin .*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
+
+COPY .devcontainer/cloud-start.sh /usr/local/bin/cloud-start.sh
+RUN chmod +x /usr/local/bin/cloud-start.sh
+
+CMD ["/usr/local/bin/cloud-start.sh"]
