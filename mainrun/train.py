@@ -150,13 +150,13 @@ class CausalSelfAttention(nn.Module):
     def forward(self, x: torch.Tensor):
         B, T, C = x.size()
         qkv = self.qkv(x).view(B, T, 3, self.n_head, self.head_dim).transpose(1, 3)
-        q, k, v = qkv[..., 0, :, :], qkv[..., 1, :, :], qkv[..., 2, :, :]
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+        q, k, v = qkv[..., 0, :, :], qkv[..., 1, :, :], qkv[..., 2, :, :] # (B, n_head, T, head_dim) each
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1))) # (B, n_head, T, T)
         att = att.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
         att = F.softmax(att, dim=-1)
         att = self.attn_drop(att)
-        y = att @ v
-        y = y.transpose(1, 2).contiguous().view(B, T, C)
+        y = att @ v # (B, n_head, T, head_dim)
+        y = y.transpose(1, 2).contiguous().view(B, T, C) # (B, T, n_head, head_dim) -> (B, T, n_head * head_dim = d_model)
         return self.resid_drop(self.proj(y))
 
 class MLP(nn.Module):
@@ -205,12 +205,12 @@ class GPT(nn.Module):
 
     def forward(self, idx: torch.Tensor, targets: torch.Tensor | None = None):
         B, T = idx.size()
-        tok = self.token_emb(idx)
-        pos = self.pos_emb[:, :T, :]
+        tok = self.token_emb(idx) # (B, T, d_model)
+        pos = self.pos_emb[:, :T, :] # (B, T, d_model)
         x = self.drop(tok + pos)
-        for block in self.blocks: x = block(x)
+        for block in self.blocks: x = block(x) # (B, T, d_model)
         x = self.ln_f(x)
-        logits = self.head(x)
+        logits = self.head(x) # (B, T, vocab_size)
         if targets is None:
             loss = None
         else:
