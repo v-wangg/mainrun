@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git pull:*)",
+      "Bash(git status)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(task:*)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(uv run:*)",
+      "Bash(npx zx:*)",
+      "Bash(wandb:*)",
+      "mcp__context7__resolve-library-id",
+      "mcp__context7__query-docs",
+      "Bash(docker system *)",
+      "Read(//Users/vwang/Library/Containers/com.docker.docker/Data/vms/0/data/**)",
+      "Read(//Users/vwang/Library/Containers/com.docker.docker/Data/**)",
+      "WebSearch"
+    ]
+  }
+}
