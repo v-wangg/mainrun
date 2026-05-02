@@ -56,4 +56,4 @@ The `report.pdf` is a graded deliverable. Writing it as we go (not at the end) m
 
 ## Where the research comes in
 
-External work we want to consult — literature review, Karpathy's training tricks, known small-LLM recipes — lands in `source-info/` via vault handoff. See [`../source-info/README.md`](../source-info/README.md) and the paper-ingest skill in the vault.
+External work we want to consult — literature review, Karpathy's training tricks, known small-LLM recipes — is read out of the vault directly when needed. No in-repo landing zone; cite vault paths in devlogs when a source materially shapes a decision.
