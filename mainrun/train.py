@@ -260,6 +260,7 @@ def main():
             mode=wandb_mode,
         )
         if wandb_mode == "online":
+            wandb.save(args.log_file, base_path=".", policy="live")
             logger.log("wandb_init", mode="online", project="mainrun-sandbox", run_id=run.id, run_url=run.url)
         else:
             logger.log("wandb_disabled", reason="WANDB_API_KEY not set", impact="no run telemetry — Claude cannot see this run")
@@ -298,7 +299,8 @@ def main():
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.log("model_info", parameters_count=model_params)
     
-    opt = torch.optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.95), eps=1e-8, weight_decay=args.weight_decay)
+    # opt = torch.optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max_steps)
 
     def evaluate():

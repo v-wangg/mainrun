@@ -14,9 +14,13 @@ You are running **locally on the user's Mac**. All editing happens here. The vas
 
 **Workflow:** edit locally → commit → `git push origin main` → SSH to box → `git pull` → `task train`. Read results in wandb.
 
-**wandb is the only feedback channel.** `mainrun/logs/*.log`, `mainrun/checkpoints/best.pt`, and `wandb/` are all gitignored, so they don't traverse via git. `train.py` initializes wandb conditionally on `WANDB_API_KEY` (project `mainrun-sandbox`). With the key set on the box, you'll get a `wandb_init` event with the run URL; without it, you'll get a `wandb_disabled` event and the run is invisible to Claude. Set `WANDB_API_KEY` as a vast.ai env var or in the box's shell rc.
+**wandb is the canonical run store.** `mainrun/logs/*.log`, `mainrun/checkpoints/best.pt`, and `wandb/` are all gitignored, so they don't traverse via git. Instead, `train.py` ships them to wandb (project `mainrun-sandbox`): the structlog file via `wandb.save(..., policy="live")`, the best checkpoint via `wandb.Artifact`. To get either back to local — for analysis, `report.pdf`, or submission — run `task fetch-run` (latest run) or `task fetch-run -- <run_id>`. The script lives at `scripts/fetch_run.py`.
+
+`WANDB_API_KEY` must be set on the box (vast.ai env var or shell rc). With the key set, you'll see a `wandb_init` event with the run URL; without it, a `wandb_disabled` event, and the run produces nothing recoverable. Treat `wandb_disabled` as a hard-stop signal.
 
 A full 7-epoch run is ~2 min on the GPU box vs ~80 min on the canonical CPU dev container. The canonical CPU dev container remains the assessment-side runtime.
+
+**Submission flow:** `task fetch-run` (locally, after the box's run completes) → optionally write `report.pdf` from the now-local log → `task submit`.
 
 See [`docs/cloud.md`](./docs/cloud.md) for the bring-up flow, image rebuild instructions, and what wandb logs.
 

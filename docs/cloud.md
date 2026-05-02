@@ -15,17 +15,23 @@ Claude used to run inside the box too, but tmux/iterm buffer issues on remote se
         edit
          │
          ▼
-       commit  ──────  git push  ──────▶  git pull
+       commit ───────  git push ───────▶  git pull
                                               │
                                               ▼
                                           task train
                                               │
                                               ▼
-                                          wandb cloud  ◀── Claude reads here
+                                          wandb cloud
+                                              │
+   task fetch-run  ◀──────────────────────────┘
+        │
+        ▼
+   analyze, report.pdf, task submit
 ```
 
 - **Edit only on local.** Never edit on the box. `scripts/checkpoint.mjs` runs `git add . && git commit` before every `task train`; if you've drifted on the box, that drift gets committed locally on the box and is invisible to local Claude until pushed back. After a clean `git pull` with no on-box edits, `checkpoint.mjs` is a no-op.
-- **wandb is the feedback channel.** `mainrun/logs/*.log`, `mainrun/checkpoints/best.pt`, and `wandb/` are all gitignored. Without wandb, the run is invisible to Claude.
+- **wandb is the canonical run store.** `mainrun/logs/*.log`, `mainrun/checkpoints/best.pt`, and `wandb/` are all gitignored. The structlog file ships via `wandb.save(..., policy="live")`; the best checkpoint ships via `wandb.Artifact`. Without wandb (no `WANDB_API_KEY` on the box, or import failure), the run produces nothing recoverable to local.
+- **Pull before analyzing or submitting.** `task fetch-run` (locally) downloads the latest run's log + checkpoint into the gitignored locations train.py would have written them to, so `report.pdf` writers, `jq` queries, and `task submit` all see them.
 
 ## Components
 
@@ -63,19 +69,49 @@ The container does not auto-clone or auto-train. Everything runs from your SSH s
 
 ## wandb integration
 
-`mainrun/train.py` initializes wandb conditionally:
+`mainrun/train.py` initializes wandb conditionally and uses it as the canonical run store:
 
 - Import is wrapped in `try/except ImportError` — training runs even if wandb isn't installed.
 - `wandb.init(mode="online" if WANDB_API_KEY else "disabled", project="mainrun-sandbox", config=hyperparams)`.
+- When online, `wandb.save("./logs/mainrun.log", base_path=".", policy="live")` ships the structlog file continuously, so even on crash the partial log is recoverable.
 - A structlog event announces the result on every run:
   - `wandb_init` with `mode`, `project`, `run_id`, `run_url` when the key is set.
-  - `wandb_disabled` with reason and impact when it isn't. Treat this as a hard signal that Claude has no visibility into the run.
+  - `wandb_disabled` with reason and impact when it isn't. Treat this as a hard-stop signal — the run produces nothing recoverable.
 - Per-step: `train/loss`, `train/lr`.
 - Per-eval: `val/loss`, `val/epoch`.
 - Best checkpoint logged as a `model` artifact with metadata (val loss, step, hyperparams) and aliases `["latest", "best"]`.
 - `wandb.finish()` runs in the `finally` block so sessions close cleanly.
 
 The frozen `evaluate()` function is not touched — wandb only consumes the loss values it returns.
+
+## Pulling a run back to local
+
+`scripts/fetch_run.py` pulls the canonical artifacts of a run into the gitignored local paths `train.py` would have written them to:
+
+```bash
+task fetch-run                  # latest run in mainrun-sandbox
+task fetch-run -- <run_id>      # specific run
+```
+
+It writes:
+- `mainrun/logs/mainrun.log` — from the wandb run file `logs/mainrun.log`.
+- `mainrun/checkpoints/best.pt` — from the `model` artifact (alias `latest` or `best`).
+
+Requires `WANDB_API_KEY` on the local Mac too. Run this before `task submit`, before writing `report.pdf`, or any time you need the raw log to grep/jq locally.
+
+## Submission flow
+
+```bash
+# On the box (after edits + push from local):
+ssh box; cd mainrun; git pull; task train
+
+# Back on local:
+task fetch-run        # populate mainrun/logs and mainrun/checkpoints from wandb
+# write report.pdf from the now-local log + wandb plots, place at mainrun/report.pdf
+task submit           # zips the repo with logs and checkpoint included
+```
+
+`scripts/submit.mjs` zips the repo excluding only `node_modules/` and `mainrun/data/`. Whatever else is on the local filesystem at submit time goes in — including the freshly-fetched log, checkpoint, and `report.pdf`.
 
 ## Differences from the local dev container
 

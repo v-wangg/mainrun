@@ -17,9 +17,13 @@ tasks:
     cmds:
       - python3 train.py
 
+  fetch-run:
+    desc: "Pull a training run's log + best checkpoint from wandb to local. Usage: task fetch-run [-- <run_id>]"
+    cmds:
+      - python3 scripts/fetch_run.py {{.CLI_ARGS}}
+
   submit:
     deps: [checkpoint]
     dir: scripts
     cmds:
       - npx zx submit.mjs
-    
