@@ -10,9 +10,13 @@ Full task description: [`README.md`](./README.md)
 
 ## Runtime environment
 
-You are running inside a **vast.ai GPU box** built from `.devcontainer/Dockerfile.cloud` (image `vwang78/mainrun-cloud` on Docker Hub). This is the default home for `mainrun` work — train, iterate, and commit from here. The canonical CPU dev container in `.devcontainer/Dockerfile` still works for local VS Code use, but cloud runs are the fast path: a full 7-epoch run is ~2 min on the GPU box vs ~80 min on the CPU dev container.
+You are running **locally on the user's Mac**. All editing happens here. The vast.ai GPU box (`vwang78/mainrun-cloud`, built from `.devcontainer/Dockerfile.cloud`) is a **remote training executor** — run-only. Never edit on the box.
 
-wandb logging is wired into `train.py` and activates automatically when `WANDB_API_KEY` is set (project `mainrun-sandbox`). With no key, training falls back to `mode="disabled"` and runs identically.
+**Workflow:** edit locally → commit → `git push origin main` → SSH to box → `git pull` → `task train`. Read results in wandb.
+
+**wandb is the only feedback channel.** `mainrun/logs/*.log`, `mainrun/checkpoints/best.pt`, and `wandb/` are all gitignored, so they don't traverse via git. `train.py` initializes wandb conditionally on `WANDB_API_KEY` (project `mainrun-sandbox`). With the key set on the box, you'll get a `wandb_init` event with the run URL; without it, you'll get a `wandb_disabled` event and the run is invisible to Claude. Set `WANDB_API_KEY` as a vast.ai env var or in the box's shell rc.
+
+A full 7-epoch run is ~2 min on the GPU box vs ~80 min on the canonical CPU dev container. The canonical CPU dev container remains the assessment-side runtime.
 
 See [`docs/cloud.md`](./docs/cloud.md) for the bring-up flow, image rebuild instructions, and what wandb logs.
 
@@ -62,5 +66,5 @@ These rules are defined by the task spec in [`README.md`](./README.md) and are *
 - **Library and framework docs: use `context7` first.** For PyTorch, datasets, tokenizers, structlog, tqdm, and anything else — query `context7` for current docs before relying on training data. Fall back to `WebSearch` / `WebFetch` when context7 is thin. LLM training API surfaces (especially in the PyTorch ecosystem) change fast.
 - **Writing to `docs/` or `devlogs/` is a user-gated decision.** Claude makes the judgement call about *whether* something warrants a new devlog or `docs/*.md` update (a non-trivial architectural change, an ablation result, a resolved incident, a new planning chunk — not routine commit-message-sized work). Before actually writing or editing, surface the proposed change and its location to the user for approval. Then edit.
 - **Git workflow — `main` only, push to `main` by default.** All commits land on `main`. Don't create feature branches, don't open PRs, don't push to non-`main` branches unless explicitly asked. After committing, push to `main` as the default follow-through — don't wait to be asked. If a Claude Code permission hook blocks a push, fix the hook in `.claude/settings.local.json`, don't fall back to a PR flow.
-- **Dev container requirement.** `mainrun/utils.py` enforces `/root/.mainrun` exists. Both the canonical local dev container and the vast.ai cloud image (`vwang78/mainrun-cloud`) write that marker, so runs from either pass; runs outside both will abort. See [`docs/environment.md`](./docs/environment.md) and [`docs/cloud.md`](./docs/cloud.md).
+- **Dev container requirement.** `mainrun/utils.py` enforces `/root/.mainrun` exists. The vast.ai cloud image (`vwang78/mainrun-cloud`) and the canonical local dev container both write that marker, so `task train` on the box passes the check. Claude on the local Mac does **not** satisfy the check, and that's by design — Claude doesn't run `task train` locally; the box does. See [`docs/environment.md`](./docs/environment.md) and [`docs/cloud.md`](./docs/cloud.md).
 - **`task train` auto-commits.** `scripts/checkpoint.mjs` runs `git add .` + commit before each training run. Stage cleanly — don't let unfinished edits leak into checkpoints.

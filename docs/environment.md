@@ -31,7 +31,7 @@ The Taskfile (`Taskfile.yml`) is the canonical entry point. Python and `npx zx` 
 
 `train.py` picks `"cuda" if torch.cuda.is_available() else "cpu"`. No MPS branch. The dev container images are Linux + optional CUDA, so Apple GPU isn't relevant inside the container.
 
-For the cloud GPU bring-up flow (vast.ai + the `vwang78/mainrun-cloud` Docker Hub image + wandb), see [`docs/cloud.md`](./cloud.md). That's where `mainrun` development actually happens day-to-day; this file documents the canonical CPU dev container that the assessment uses.
+For the remote training executor (vast.ai + `vwang78/mainrun-cloud` + wandb), see [`docs/cloud.md`](./cloud.md). That box runs `task train` only; Claude edits locally and pushes via git. This file documents the canonical CPU dev container that the assessment uses.
 
 ## Logs
 

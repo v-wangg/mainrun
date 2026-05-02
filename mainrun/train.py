@@ -258,10 +258,14 @@ def main():
             project="mainrun-sandbox",
             config=hyperparams_dict,
             mode=wandb_mode,
-            settings=wandb.Settings(silent=True),
         )
+        if wandb_mode == "online":
+            logger.log("wandb_init", mode="online", project="mainrun-sandbox", run_id=run.id, run_url=run.url)
+        else:
+            logger.log("wandb_disabled", reason="WANDB_API_KEY not set", impact="no run telemetry — Claude cannot see this run")
     else:
         run = None
+        logger.log("wandb_disabled", reason="wandb package not importable", impact="no run telemetry — Claude cannot see this run")
 
     train_titles, val_titles = get_titles(args.num_titles, args.seed, args.val_frac)
     
