@@ -12,7 +12,7 @@ Full task description: [`README.md`](./README.md)
 
 You are running **locally on the user's Mac**. All editing happens here. The vast.ai GPU box (`vwang78/mainrun-cloud`, built from `.devcontainer/Dockerfile.cloud`) is a **remote training executor** — run-only. Never edit on the box.
 
-**Workflow:** edit locally → commit → `git push origin main` → SSH to box → `git pull` → `task train`. Read results in wandb.
+**Workflow:** edit locally → commit → `git push origin main` → SSH to box → `git pull` → `task train`. Read results in wandb. ALL commits should pass through user approval first. When you encounter a good time to commit, ask the user to verify your changes before doing so.
 
 **wandb is the canonical run store.** `mainrun/logs/*.log`, `mainrun/checkpoints/best.pt`, and `wandb/` are all gitignored, so they don't traverse via git. Instead, `train.py` ships them to wandb (project `mainrun-sandbox`): the structlog file via `wandb.save(..., policy="live")`, the best checkpoint via `wandb.Artifact`. To get either back to local — for analysis, `report.pdf`, or submission — run `task fetch-run` (latest run) or `task fetch-run -- <run_id>`. The script lives at `scripts/fetch_run.py`.
 

@@ -20,7 +20,8 @@
       "Bash(docker system *)",
       "Read(//Users/vwang/Library/Containers/com.docker.docker/Data/vms/0/data/**)",
       "Read(//Users/vwang/Library/Containers/com.docker.docker/Data/**)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(brew list *)"
     ]
   }
 }
