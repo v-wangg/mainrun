@@ -336,14 +336,21 @@ def main():
     train_ids = torch.tensor(tok.encode(train_text), dtype=torch.long)
     val_ids = torch.tensor(tok.encode(val_text), dtype=torch.long)
 
+    train_eval_text = train_text[:len(val_text)]
+    train_eval_ids = torch.tensor(tok.encode(train_eval_text), dtype=torch.long)
+
     chars_per_token_val = len(val_text) / len(val_ids)
+    chars_per_token_train = len(train_text) / len(train_ids)
     logger.emit("tokenizer_info",
                 vocab_size=tok.vocab_size,
                 train_text_chars=len(train_text),
                 val_text_chars=len(val_text),
                 train_tokens=len(train_ids),
                 val_tokens=len(val_ids),
-                chars_per_token_val=chars_per_token_val)
+                chars_per_token_val=chars_per_token_val,
+                chars_per_token_train=chars_per_token_train,
+                train_eval_text_chars=len(train_eval_text),
+                train_eval_tokens=len(train_eval_ids))
     if run is not None:
         run.summary["chars_per_token_val"] = chars_per_token_val
 
@@ -398,6 +405,18 @@ def main():
         model.train()
         return losses / len(val_text)
 
+    def evaluate_train():
+        model.eval()
+        losses = 0.0
+        with torch.no_grad():
+            for xb, yb in iter_full_split(train_eval_ids, args.block_size, args.batch_size, device):
+                logits, _ = model(xb, yb)
+                B, T, V = logits.size()
+                loss = F.cross_entropy(logits.view(-1, V), yb.view(-1), reduction='sum')
+                losses += loss.item()
+        model.train()
+        return losses / len(train_eval_text)
+
     ptr = 0
     step = 0
     best_val_loss = float("inf")
@@ -430,6 +449,7 @@ def main():
 
             if step == 1 or step % eval_interval == 0 or step == max_steps:
                 val_loss = evaluate()
+                train_eval_loss = evaluate_train()
                 with torch.no_grad():
                     weight_norm_total = math.sqrt(sum(p.detach().pow(2).sum().item() for p in model.parameters() if p.requires_grad))
                 logger.emit("validation_step",
@@ -437,6 +457,9 @@ def main():
                             max_steps=max_steps,
                             loss=val_loss,
                             val_perplexity_per_token=math.exp(val_loss * chars_per_token_val),
+                            train_eval_loss=train_eval_loss,
+                            train_eval_perplexity_per_token=math.exp(train_eval_loss * (len(train_eval_text) / len(train_eval_ids))),
+                            generalization_gap=val_loss - train_eval_loss,
                             weight_norm_total=weight_norm_total,
                             epoch=epoch,
                             elapsed_time=elapsed)
