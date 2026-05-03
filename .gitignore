@@ -14,7 +14,8 @@ env/
 venv/
 .env
 
-mainrun*.log
+mainrun/logs/*.log
+!mainrun/logs/baseline.log
 
 node_modules/
 

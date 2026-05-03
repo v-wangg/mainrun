@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
-"""Pull a training run's structlog file + best checkpoint from wandb to local.
+"""Pull all wandb run logs into mainrun/logs/ as per-run files.
 
-Usage:
-    python3 scripts/fetch_run.py            # latest run in mainrun-sandbox
-    python3 scripts/fetch_run.py <run_id>   # specific run id
+Default (no args): reconcile every run in `mainrun-sandbox` against the local
+log directory. Each run lands as `{sanitized_name}-{run_id}.log`. Already-fetched
+runs are skipped; runs renamed on the wandb web UI get their local file renamed
+to match (run_id is the stable key).
 
-Writes:
-    mainrun/logs/mainrun.log
-    mainrun/checkpoints/best.pt
-
-Designed to be run on the local Mac before `task submit`. wandb is the
-canonical store for both files; they are gitignored locally.
+Use `task fetch-checkpoint -- <run_name>` to download a run's best.pt.
 """
-import argparse
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -22,8 +18,8 @@ import wandb
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROJECT = "mainrun-sandbox"
 LOG_REL_IN_RUN = "logs/mainrun.log"
-LOG_DEST = REPO_ROOT / "mainrun" / "logs" / "mainrun.log"
-CKPT_DEST_DIR = REPO_ROOT / "mainrun" / "checkpoints"
+LOG_DIR = REPO_ROOT / "mainrun" / "logs"
+DOWNLOAD_ROOT = REPO_ROOT / "mainrun"  # so wandb writes to LOG_DIR/mainrun.log
 
 
 def fail(msg):
@@ -31,12 +27,28 @@ def fail(msg):
     sys.exit(1)
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("run_id", nargs="?", default=None,
-                        help="wandb run id (default: latest run in mainrun-sandbox)")
-    args = parser.parse_args()
+def sanitize_name(name: str) -> str:
+    if not name:
+        return "run"
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", name)
+    cleaned = re.sub(r"_+", "_", cleaned).strip("_")
+    return cleaned or "run"
 
+
+def index_local_logs() -> dict[str, Path]:
+    """Map run_id -> local log path for files matching `*-<run_id>.log`."""
+    index: dict[str, Path] = {}
+    if not LOG_DIR.exists():
+        return index
+    for path in LOG_DIR.glob("*-*.log"):
+        # run_id is the substring after the final '-' before '.log'
+        run_id = path.stem.rsplit("-", 1)[-1]
+        if run_id:
+            index[run_id] = path
+    return index
+
+
+def main():
     if not os.environ.get("WANDB_API_KEY"):
         fail("WANDB_API_KEY not set — cannot fetch from wandb.")
 
@@ -45,34 +57,52 @@ def main():
     if not entity:
         fail("could not determine wandb entity. Run `wandb login` first.")
 
-    if args.run_id:
-        run = api.run(f"{entity}/{PROJECT}/{args.run_id}")
-    else:
-        runs = api.runs(f"{entity}/{PROJECT}", per_page=1, order="-created_at")
-        run = next(iter(runs), None)
-        if run is None:
-            fail(f"no runs found in {entity}/{PROJECT}.")
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    local = index_local_logs()
+    runs = api.runs(f"{entity}/{PROJECT}", order="-created_at")
 
-    print(f"run: {run.name} ({run.id})")
-    print(f"url: {run.url}")
-    print(f"state: {run.state}")
+    counts = {"fetched": 0, "renamed": 0, "up_to_date": 0, "skipped": 0}
 
-    LOG_DEST.parent.mkdir(parents=True, exist_ok=True)
-    log_root = REPO_ROOT / "mainrun"
-    try:
-        run.file(LOG_REL_IN_RUN).download(root=str(log_root), replace=True)
-        print(f"log → {LOG_DEST.relative_to(REPO_ROOT)}")
-    except Exception as exc:
-        print(f"warn: could not download log file '{LOG_REL_IN_RUN}': {exc}", file=sys.stderr)
+    for run in runs:
+        target_name = f"{sanitize_name(run.name)}-{run.id}.log"
+        target = LOG_DIR / target_name
+        existing = local.get(run.id)
 
-    model_artifacts = [a for a in run.logged_artifacts() if a.type == "model"]
-    if not model_artifacts:
-        print("warn: no model artifact attached to this run.", file=sys.stderr)
-        return
-    artifact = model_artifacts[0]
-    CKPT_DEST_DIR.mkdir(parents=True, exist_ok=True)
-    artifact.download(root=str(CKPT_DEST_DIR))
-    print(f"checkpoint → {CKPT_DEST_DIR.relative_to(REPO_ROOT)}/best.pt (artifact: {artifact.name})")
+        if existing is not None:
+            if existing.name == target_name:
+                print(f"up-to-date: {target_name}")
+                counts["up_to_date"] += 1
+            else:
+                existing.rename(target)
+                print(f"renamed: {existing.name} → {target_name}")
+                counts["renamed"] += 1
+            continue
+
+        try:
+            run.file(LOG_REL_IN_RUN).download(root=str(DOWNLOAD_ROOT), replace=True)
+        except Exception as exc:
+            print(f"skip {run.id} ({run.name}): {exc}", file=sys.stderr)
+            counts["skipped"] += 1
+            continue
+
+        downloaded = LOG_DIR / "mainrun.log"
+        if not downloaded.exists():
+            print(f"skip {run.id} ({run.name}): downloaded file missing", file=sys.stderr)
+            counts["skipped"] += 1
+            continue
+
+        downloaded.replace(target)
+        print(f"fetched: {target_name}")
+        counts["fetched"] += 1
+
+    total = sum(counts.values())
+    print(
+        f"\nsummary: {total} runs — "
+        f"{counts['fetched']} fetched, "
+        f"{counts['renamed']} renamed, "
+        f"{counts['up_to_date']} up-to-date, "
+        f"{counts['skipped']} skipped"
+    )
 
 
 if __name__ == "__main__":

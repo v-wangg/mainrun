@@ -18,9 +18,14 @@ tasks:
       - python3 train.py {{.CLI_ARGS}}
 
   fetch-run:
-    desc: "Pull a training run's log + best checkpoint from wandb to local. Usage: task fetch-run [-- <run_id>]"
+    desc: "Pull all wandb run logs to mainrun/logs/ as per-run files. Reconciles renames done on wandb web."
     cmds:
       - python3 scripts/fetch_run.py {{.CLI_ARGS}}
+
+  fetch-checkpoint:
+    desc: "Pull a run's best checkpoint from wandb by name. Usage: task fetch-checkpoint -- <run_name>"
+    cmds:
+      - python3 scripts/fetch_checkpoint.py {{.CLI_ARGS}}
 
   submit:
     deps: [checkpoint]
