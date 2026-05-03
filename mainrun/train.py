@@ -235,34 +235,10 @@ def main():
         model.train()
         return losses / n_tokens
 
-    def evaluate_position_loss():
-        # Per-token (not per-char) val CE averaged over all val batches, broken out by
-        # sequence position. One-time diagnostic; healthy autoregressive models show
-        # a monotone-decreasing curve (later positions get more context → lower loss).
-        # Uses iter_full_split (frozen) but does not mutate evaluate()'s behavior.
-        model.eval()
-        pos_losses = torch.zeros(args.block_size, device=device)
-        n_batches = 0
-        with torch.no_grad():
-            for xb, yb in iter_full_split(val_ids, args.block_size, args.batch_size, device):
-                logits, _ = model(xb, yb)
-                B, T, V = logits.size()
-                per_token = F.cross_entropy(
-                    logits.view(-1, V), yb.view(-1), reduction='none'
-                ).view(B, T)
-                pos_losses += per_token.mean(dim=0)
-                n_batches += 1
-        model.train()
-        return (pos_losses / max(n_batches, 1)).cpu().tolist()
-
     step = 0
     best_val_loss = float("inf")
     best_step = 0
     last_train_loss = float("nan")
-    # Accumulating (label, position, loss) rows for the position-loss chart.
-    # Populated at step 1 (init regime) and at max_steps (final). Two evals only,
-    # to keep eval cost bounded — full evolution would be option (b), this is (c).
-    pos_loss_history_rows = []
     t0 = time.time()
     for epoch in range(1, args.epochs + 1):
         # Per-epoch shuffle: deterministic per (seed, epoch). Re-orders headlines
@@ -347,36 +323,6 @@ def main():
                             val_loss_best_so_far=best_val_loss,
                             epoch=epoch,
                             elapsed_time=elapsed)
-                if step == 1 or step == max_steps:
-                    pos_losses = evaluate_position_loss()
-                    # structlog: full per-position curve as a list. The DualLogger's
-                    # wandb auto-mirror skips non-scalar values, so this stays
-                    # structlog-only — keeps the JSON record complete without
-                    # producing 128 single-point line charts in wandb.
-                    # NB: don't add scalar context kwargs here — they would auto-mirror
-                    # as one-point time-series. block_size is recoverable as len(losses).
-                    logger.emit("position_loss",
-                                step=step,
-                                losses=pos_losses)
-                    # Accumulate (label, position, loss) for the cumulative chart.
-                    # Label is a string ("step 1", "step 938") so wandb treats it as
-                    # a categorical grouping for stroke color, giving distinct lines.
-                    label = f"step {step}"
-                    for i, l in enumerate(pos_losses):
-                        pos_loss_history_rows.append([label, i, l])
-                    # wandb: re-log a single chart spanning all evals collected so far.
-                    # `stroke=label` colors one line per eval, so the final chart shows
-                    # init curve vs trained curve on the same axes for direct comparison.
-                    if run is not None:
-                        pos_table = wandb.Table(
-                            data=pos_loss_history_rows,
-                            columns=["label", "position", "loss"],
-                        )
-                        run.log({"position_loss/curve": wandb.plot.line(
-                            pos_table, "position", "loss", stroke="label",
-                            title="Per-token val loss vs sequence position (init vs final)",
-                        )}, step=step)
-
     logger.emit("run_summary",
                 best_val_loss=best_val_loss,
                 best_step=best_step,
