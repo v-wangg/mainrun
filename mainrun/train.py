@@ -567,11 +567,26 @@ def main():
                             elapsed_time=elapsed)
                 if step == 1:
                     pos_losses = evaluate_position_loss()
-                    quartiles = [0, args.block_size // 4, args.block_size // 2,
-                                 3 * args.block_size // 4, args.block_size - 1]
+                    # structlog: full per-position curve as a list. The DualLogger's
+                    # wandb auto-mirror skips non-scalar values, so this stays
+                    # structlog-only — keeps the JSON record complete without
+                    # producing 128 single-point line charts in wandb.
                     logger.emit("position_loss",
                                 step=step,
-                                **{f"pos_{q}": pos_losses[q] for q in quartiles})
+                                block_size=args.block_size,
+                                losses=pos_losses)
+                    # wandb: render the curve as a single custom chart with
+                    # sequence position on the x-axis. Uses run.log directly
+                    # because emit() only handles scalar time-series.
+                    if run is not None:
+                        pos_table = wandb.Table(
+                            data=[[i, l] for i, l in enumerate(pos_losses)],
+                            columns=["position", "loss"],
+                        )
+                        run.log({"position_loss/curve_at_step_1": wandb.plot.line(
+                            pos_table, "position", "loss",
+                            title="Per-token val loss vs sequence position (step 1)",
+                        )}, step=step)
 
     logger.emit("run_summary",
                 best_val_loss=best_val_loss,
