@@ -2,7 +2,7 @@ import torch
 from datasets import load_dataset
 from tokenizers import Tokenizer, models, trainers, pre_tokenizers, decoders
 
-def get_titles(num_titles: int, seed: int, val_frac: float) -> str:
+def get_titles(num_titles: int, seed: int, val_frac: float) -> tuple[list[str], list[str]]:
     ds = load_dataset("julien040/hacker-news-posts", split="train", cache_dir="./data").shuffle(seed=seed)
     titles = [row["title"].strip() for row in ds.take(num_titles)]
     n = int(num_titles * (1 - val_frac))
@@ -37,8 +37,8 @@ def train_tokenizer(titles: list[str], vocab_size: int, unk_token: str = "<unk>"
 class BPETokenizer:
     def __init__(self, tokenizer: Tokenizer):
         self.tk = tokenizer
-        self.stoi = {tok: i for tok, i in tokenizer.get_vocab().items()}
-        self.itos = {i: tok for tok, i in tokenizer.get_vocab().items()}
+        self.stoi = dict(tokenizer.get_vocab())
+        self.itos = {i: tok for tok, i in self.stoi.items()}
 
     def encode(self, s: str) -> list[int]:
         return self.tk.encode(s).ids

@@ -17,6 +17,7 @@ class Hyperparameters:
     min_lr_frac: float = 0.1
     grad_clip: float = 1.0
     evals_per_epoch: int = 3
+    health_log_interval: int = 50
 
     epochs: int = 7
     seed: int = 1337

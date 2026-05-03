@@ -144,21 +144,17 @@ def main():
     )
     model = GPT(cfg).to(device)
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    n_residual_proj = sum(
-        1 for m in model.modules()
-        if isinstance(m, nn.Linear) and getattr(m, "RESIDUAL_SCALE_INIT", False)
-    )
     logger.emit("model_info",
                 parameters_count=model_params,
                 init_scheme="gpt2_scaled_residual",
                 base_std=0.02,
                 residual_std=0.02 * (2 * args.n_layer) ** -0.5,
-                n_residual_proj=n_residual_proj)
+                n_residual_proj=model.n_residual_proj)
 
     # Activation RMS taps. Three forward hooks read the residual stream amplitude at
     # entry (post-embed/dropout), middle of the stack, and exit (post-final-LN).
     # Hooks fire every step (compute is trivial); values are sampled into health_step
-    # events every 50 steps.
+    # events every args.health_log_interval steps.
     class RMSTaps:
         def __init__(self):
             self.values = {}
@@ -288,7 +284,7 @@ def main():
                         elapsed_time=elapsed,
                         prnt=False)
 
-            if step == 1 or step % 50 == 0:
+            if step == 1 or step % args.health_log_interval == 0:
                 logger.emit("health_step",
                             step=step,
                             max_steps=max_steps,
@@ -343,7 +339,7 @@ if __name__ == "__main__":
     try:
         main()
     finally:
-        if logger and hasattr(logger, 'file_handler'):
-            logger.file_handler.close()
+        if logger is not None:
+            logger.close()
         if WANDB_AVAILABLE:
             wandb.finish()

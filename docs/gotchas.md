@@ -39,9 +39,9 @@ Traps, anti-patterns, and submission-breaking pitfalls. Re-read before every non
 - `report.pdf` must be at `mainrun/report.pdf` (not repo root) per `README.md`.
 - Logs from the final run must reflect the final code state — don't submit a stale `baseline.log`-shaped file in place of a fresh `mainrun.log`.
 
-## Tokenizer training uses the full set
+## Tokenizer is trained on train-only
 
-`main()` currently trains the tokenizer on `train_titles + val_titles`. This means validation text shaped the vocabulary — not strictly leakage of targets, but a subtle source of information flow. Worth flagging in any tokenizer ablation; worth calling out in the report if we choose to train on train-only.
+`main()` trains the tokenizer on `train_titles` (not `train_titles + val_titles`). Validation text does not shape the vocabulary, so there's no information-flow channel from val into the BPE merges. If you change this back, note it as an ablation — the metric is sensitive because tokenization efficiency directly affects the per-character denominator (see "Validation metric — the denominator" above).
 
 ## Schedule length depends on `max_steps`, which depends on data shape
 

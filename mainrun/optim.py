@@ -4,7 +4,9 @@ import math
 import torch
 import torch.nn as nn
 
-def configure_optimizer(model: nn.Module, args: "Hyperparameters", device: str):
+from config import Hyperparameters
+
+def configure_optimizer(model: nn.Module, args: Hyperparameters, device: str):
     # Any param with dim() >= 2 gets weight decay (Linear weights,
     # token_emb.weight, pos_emb), everything else (biases, LayerNorm params) does not.
     # head.weight is tied to token_emb.weight; named_parameters() deduplicates.

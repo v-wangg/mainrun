@@ -66,7 +66,7 @@ These rules are defined by the task spec in [`README.md`](./README.md) and are *
 These are stable across experiments but not recoverable by reading code alone. Re-check before changing the relevant surface:
 
 - **Validation metric is per-character, not per-token.** `evaluate()` returns `total_loss_sum / len(val_text)` where `val_text` is the raw validation *string* (with `<eos>` separators expanding to 5 characters each). More efficient tokenization → fewer summed terms → lower reported loss independent of model quality. See `docs/gotchas.md` § "Validation metric".
-- **Tokenizer is trained on `train_titles + val_titles`.** Validation text shapes the vocabulary. Not strictly target leakage but a subtle information-flow channel. Worth flagging in tokenizer ablations.
+- **Tokenizer is trained on `train_titles` only** (see `train.py` `train_tokenizer(train_titles, ...)`). Earlier versions trained on `train_titles + val_titles`; switched to train-only to remove a subtle information-flow channel from val text into the vocabulary. See `devlogs/2026-05-03 bpe-train-only.md`.
 - **Residual stream init follows GPT-2's scaled scheme.** Output projections of attention and MLP blocks are initialized with std `0.02 / sqrt(2 * n_layer)` via the `RESIDUAL_SCALE_INIT` marker pattern in `model.py`. See `devlogs/2026-05-03 scaled-residual-init.md` for rationale.
 - **`DualLogger.emit(event, step=X, **kw)` auto-mirrors numeric fields to wandb** under `{event}/{field}` keys (see `mainrun/telemetry.py`). Calling `logger.emit("training_step", step=N, loss=Y)` produces wandb metric `training_step/loss` for free; no separate `wandb.log` call needed.
 

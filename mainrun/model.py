@@ -90,6 +90,13 @@ class GPT(nn.Module):
             if isinstance(module, nn.Linear) and module.bias is not None:
                 nn.init.zeros_(module.bias)
 
+    @property
+    def n_residual_proj(self) -> int:
+        return sum(
+            1 for m in self.modules()
+            if isinstance(m, nn.Linear) and getattr(m, "RESIDUAL_SCALE_INIT", False)
+        )
+
     def forward(self, idx: torch.Tensor, targets: torch.Tensor | None = None):
         B, T = idx.size()
         tok = self.token_emb(idx) # (B, T, d_model)

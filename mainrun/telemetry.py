@@ -47,6 +47,9 @@ def configure_logging(log_file: str):
         def set_run(self, run):
             self.run = run
 
+        def close(self):
+            self.file_handler.close()
+
         def emit(self, event, **kwargs):
             log_entry = json.dumps({"event": event, "timestamp": time.time(), **kwargs})
             self.file_handler.write(log_entry + "\n")
