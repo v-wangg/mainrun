@@ -3,6 +3,8 @@ mainrun/checkpoints/
 
 wandb/
 
+devlogs/
+
 __pycache__/
 *.py[cod]
 *$py.class
