@@ -4,7 +4,7 @@ from dataclasses import dataclass
 class Hyperparameters:
     block_size: int = 128
     batch_size: int = 256
-    vocab_size: int = 16_000
+    vocab_size: int = 24_000
     n_layer: int = 6
     n_head: int = 8
     d_model: int = 512
