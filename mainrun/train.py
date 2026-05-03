@@ -1,5 +1,5 @@
 import utils
-import math, random, time
+import math, random, time, inspect
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -28,12 +28,15 @@ class Hyperparameters:
     n_head: int = 8
     d_model: int = 512
     dropout: float = 0.1
-    lr: float = 6e-3
+    lr: float = 6e-4
     adam_betas: tuple = (0.9, 0.95)
     adam_eps: float = 1e-8
-    weight_decay: float = 0.0
+    weight_decay: float = 0.1
+    warmup_steps: int = 50
+    min_lr_frac: float = 0.1
+    grad_clip: float = 1.0
     evals_per_epoch: int = 3
-    
+
     epochs: int = 7
     seed: int = 1337
     num_titles: int = 100_000
@@ -258,6 +261,41 @@ class GPT(nn.Module):
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), reduction='mean')
         return logits, loss
 
+def configure_optimizer(model: nn.Module, args: "Hyperparameters", device: str):
+    # Any param with dim() >= 2 gets weight decay (Linear weights,
+    # token_emb.weight, pos_emb), everything else (biases, LayerNorm params) does not.
+    # head.weight is tied to token_emb.weight; named_parameters() deduplicates.
+    decay, no_decay = [], []
+    for _, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        (decay if p.dim() >= 2 else no_decay).append(p)
+    optim_groups = [
+        {"params": decay, "weight_decay": args.weight_decay},
+        {"params": no_decay, "weight_decay": 0.0},
+    ]
+    n_decay_params = sum(p.numel() for p in decay)
+    n_no_decay_params = sum(p.numel() for p in no_decay)
+    fused_available = "fused" in inspect.signature(torch.optim.AdamW).parameters
+    use_fused = fused_available and device == "cuda"
+    opt = torch.optim.AdamW(
+        optim_groups,
+        lr=args.lr,
+        betas=args.adam_betas,
+        eps=args.adam_eps,
+        fused=use_fused,
+    )
+    return opt, n_decay_params, n_no_decay_params, len(decay), len(no_decay), use_fused
+
+def get_lr(step: int, peak_lr: float, min_lr: float, warmup_steps: int, max_steps: int) -> float:
+    if step < warmup_steps:
+        return peak_lr * (step + 1) / warmup_steps
+    if step > max_steps:
+        return min_lr
+    decay_ratio = (step - warmup_steps) / (max_steps - warmup_steps)
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
+    return min_lr + coeff * (peak_lr - min_lr)
+
 def main():
     args = Hyperparameters()
     torch.manual_seed(args.seed)
@@ -297,7 +335,18 @@ def main():
     val_text = eos_token.join(val_titles) + eos_token
     train_ids = torch.tensor(tok.encode(train_text), dtype=torch.long)
     val_ids = torch.tensor(tok.encode(val_text), dtype=torch.long)
-    
+
+    chars_per_token_val = len(val_text) / len(val_ids)
+    logger.emit("tokenizer_info",
+                vocab_size=tok.vocab_size,
+                train_text_chars=len(train_text),
+                val_text_chars=len(val_text),
+                train_tokens=len(train_ids),
+                val_tokens=len(val_ids),
+                chars_per_token_val=chars_per_token_val)
+    if run is not None:
+        run.summary["chars_per_token_val"] = chars_per_token_val
+
     batches = len(train_ids) // (args.block_size * args.batch_size)
     max_steps = args.epochs * batches
     eval_interval = batches // args.evals_per_epoch
@@ -319,10 +368,23 @@ def main():
     model = GPT(cfg).to(device)
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.emit("model_info", parameters_count=model_params)
-    
-    # opt = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=args.adam_betas, eps=args.adam_eps, weight_decay=args.weight_decay)
-    opt = torch.optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max_steps)
+
+    opt, n_decay_params, n_no_decay_params, n_decay_tensors, n_no_decay_tensors, use_fused = configure_optimizer(model, args, device)
+    logger.emit("optimizer_info",
+                optimizer="AdamW",
+                fused=use_fused,
+                scheduler="warmup_then_cosine (manual get_lr)",
+                peak_lr=args.lr,
+                min_lr=args.lr * args.min_lr_frac,
+                warmup_steps=args.warmup_steps,
+                betas=list(args.adam_betas),
+                eps=args.adam_eps,
+                weight_decay=args.weight_decay,
+                grad_clip=args.grad_clip,
+                n_decay_tensors=n_decay_tensors,
+                n_no_decay_tensors=n_no_decay_tensors,
+                n_decay_params=n_decay_params,
+                n_no_decay_params=n_no_decay_params)
 
     def evaluate():
         model.eval()
@@ -340,6 +402,7 @@ def main():
     step = 0
     best_val_loss = float("inf")
     best_step = 0
+    last_train_loss = float("nan")
     t0 = time.time()
     for epoch in range(1, args.epochs + 1):
         for _ in tqdm(range(1, batches + 1), desc=f"Epoch {epoch}/{args.epochs}"):
@@ -348,31 +411,46 @@ def main():
             _, loss = model(xb, yb)
             opt.zero_grad(set_to_none=True)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip).item()
+            lr = get_lr(step, args.lr, args.lr * args.min_lr_frac, args.warmup_steps, max_steps)
+            for pg in opt.param_groups:
+                pg["lr"] = lr
             opt.step()
-            scheduler.step()
 
+            last_train_loss = loss.item()
             elapsed = time.time() - t0
             logger.emit("training_step",
                         step=step,
                         max_steps=max_steps,
-                        loss=loss.item(),
-                        lr=scheduler.get_last_lr()[0],
+                        loss=last_train_loss,
+                        lr=lr,
+                        grad_norm=grad_norm,
                         elapsed_time=elapsed,
                         prnt=False)
 
             if step == 1 or step % eval_interval == 0 or step == max_steps:
                 val_loss = evaluate()
+                with torch.no_grad():
+                    weight_norm_total = math.sqrt(sum(p.detach().pow(2).sum().item() for p in model.parameters() if p.requires_grad))
                 logger.emit("validation_step",
                             step=step,
                             max_steps=max_steps,
                             loss=val_loss,
+                            val_perplexity_per_token=math.exp(val_loss * chars_per_token_val),
+                            weight_norm_total=weight_norm_total,
                             epoch=epoch,
                             elapsed_time=elapsed)
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     best_step = step
                     save_checkpoint_atomic(model, args, step, val_loss, BEST_CKPT_PATH)
+
+    logger.emit("run_summary",
+                best_val_loss=best_val_loss,
+                best_step=best_step,
+                final_train_loss=last_train_loss,
+                total_runtime=time.time() - t0,
+                wandb_run_url=run.url if run is not None else None)
 
     if run is not None and BEST_CKPT_PATH.exists():
         artifact = wandb.Artifact(
