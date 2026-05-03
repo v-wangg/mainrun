@@ -494,6 +494,10 @@ def main():
     best_val_loss = float("inf")
     best_step = 0
     last_train_loss = float("nan")
+    # Accumulating (label, position, loss) rows for the position-loss chart.
+    # Populated at step 1 (init regime) and at max_steps (final). Two evals only,
+    # to keep eval cost bounded — full evolution would be option (b), this is (c).
+    pos_loss_history_rows = []
     t0 = time.time()
     for epoch in range(1, args.epochs + 1):
         # Per-epoch shuffle: deterministic per (seed, epoch). Re-orders headlines
@@ -574,7 +578,7 @@ def main():
                             val_loss_best_so_far=best_val_loss,
                             epoch=epoch,
                             elapsed_time=elapsed)
-                if step == 1:
+                if step == 1 or step == max_steps:
                     pos_losses = evaluate_position_loss()
                     # structlog: full per-position curve as a list. The DualLogger's
                     # wandb auto-mirror skips non-scalar values, so this stays
@@ -585,17 +589,23 @@ def main():
                     logger.emit("position_loss",
                                 step=step,
                                 losses=pos_losses)
-                    # wandb: render the curve as a single custom chart with
-                    # sequence position on the x-axis. Uses run.log directly
-                    # because emit() only handles scalar time-series.
+                    # Accumulate (label, position, loss) for the cumulative chart.
+                    # Label is a string ("step 1", "step 938") so wandb treats it as
+                    # a categorical grouping for stroke color, giving distinct lines.
+                    label = f"step {step}"
+                    for i, l in enumerate(pos_losses):
+                        pos_loss_history_rows.append([label, i, l])
+                    # wandb: re-log a single chart spanning all evals collected so far.
+                    # `stroke=label` colors one line per eval, so the final chart shows
+                    # init curve vs trained curve on the same axes for direct comparison.
                     if run is not None:
                         pos_table = wandb.Table(
-                            data=[[i, l] for i, l in enumerate(pos_losses)],
-                            columns=["position", "loss"],
+                            data=pos_loss_history_rows,
+                            columns=["label", "position", "loss"],
                         )
-                        run.log({"position_loss/curve_at_step_1": wandb.plot.line(
-                            pos_table, "position", "loss",
-                            title="Per-token val loss vs sequence position (step 1)",
+                        run.log({"position_loss/curve": wandb.plot.line(
+                            pos_table, "position", "loss", stroke="label",
+                            title="Per-token val loss vs sequence position (init vs final)",
                         )}, step=step)
 
     logger.emit("run_summary",
