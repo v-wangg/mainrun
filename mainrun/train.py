@@ -186,6 +186,9 @@ class CausalSelfAttention(nn.Module):
         self.n_head   = cfg.n_head
         self.qkv = nn.Linear(cfg.d_model, 3 * cfg.d_model)
         self.proj = nn.Linear(cfg.d_model, cfg.d_model)
+        # Marks the residual-stream output projection so GPT._init_weights applies
+        # the GPT-2 scaled init (std *= (2 * n_layer) ** -0.5). Read by GPT, not used here.
+        self.proj.RESIDUAL_SCALE_INIT = True
         self.attn_drop = nn.Dropout(cfg.dropout)
         self.resid_drop= nn.Dropout(cfg.dropout)
         self.register_buffer("tril", torch.tril(torch.ones(cfg.block_size, cfg.block_size)))
@@ -211,6 +214,9 @@ class MLP(nn.Module):
             nn.Linear(4 * cfg.d_model, cfg.d_model),
             nn.Dropout(cfg.dropout),
         )
+        # net[2] is the d_model-out projection that lands back in the residual stream.
+        # Marked for GPT-2 scaled init in GPT._init_weights.
+        self.net[2].RESIDUAL_SCALE_INIT = True
     def forward(self, x): return self.net(x)
 
 class Block(nn.Module):
@@ -239,10 +245,12 @@ class GPT(nn.Module):
         self.apply(self._init_weights)
         self.head.weight = self.token_emb.weight
 
-    @staticmethod
-    def _init_weights(module):
+    def _init_weights(self, module):
         if isinstance(module, (nn.Linear, nn.Embedding)):
-            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            std = 0.02
+            if isinstance(module, nn.Linear) and getattr(module, "RESIDUAL_SCALE_INIT", False):
+                std *= (2 * self.cfg.n_layer) ** -0.5
+            nn.init.normal_(module.weight, mean=0.0, std=std)
             if isinstance(module, nn.Linear) and module.bias is not None:
                 nn.init.zeros_(module.bias)
 
@@ -408,7 +416,16 @@ def main():
     )
     model = GPT(cfg).to(device)
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logger.emit("model_info", parameters_count=model_params)
+    n_residual_proj = sum(
+        1 for m in model.modules()
+        if isinstance(m, nn.Linear) and getattr(m, "RESIDUAL_SCALE_INIT", False)
+    )
+    logger.emit("model_info",
+                parameters_count=model_params,
+                init_scheme="gpt2_scaled_residual",
+                base_std=0.02,
+                residual_std=0.02 * (2 * args.n_layer) ** -0.5,
+                n_residual_proj=n_residual_proj)
 
     # Activation RMS taps. Three forward hooks read the residual stream amplitude at
     # entry (post-embed/dropout), middle of the stack, and exit (post-final-LN).
@@ -566,14 +583,18 @@ def main():
                     best_val_loss = val_loss
                     best_step = step
                     save_checkpoint_atomic(model, args, step, val_loss, BEST_CKPT_PATH)
+                chars_per_token_train_eval = len(train_eval_text) / len(train_eval_ids)
                 logger.emit("validation_step",
                             step=step,
                             max_steps=max_steps,
                             loss=val_loss,
+                            val_loss_per_token=val_loss * chars_per_token_val,
                             val_perplexity_per_token=math.exp(val_loss * chars_per_token_val),
                             train_eval_loss=train_eval_loss,
-                            train_eval_perplexity_per_token=math.exp(train_eval_loss * (len(train_eval_text) / len(train_eval_ids))),
+                            train_eval_loss_per_token=train_eval_loss * chars_per_token_train_eval,
+                            train_eval_perplexity_per_token=math.exp(train_eval_loss * chars_per_token_train_eval),
                             generalization_gap=val_loss - train_eval_loss,
+                            generalization_gap_per_token=(val_loss * chars_per_token_val) - (train_eval_loss * chars_per_token_train_eval),
                             weight_norm_total=weight_norm_total,
                             val_loss_best_so_far=best_val_loss,
                             epoch=epoch,
