@@ -127,14 +127,12 @@ def get_titles(num_titles: int, seed: int, val_frac: float) -> str:
     n = int(num_titles * (1 - val_frac))
     return titles[:n], titles[n:]
 
-def get_batch(split_ids: torch.Tensor, ptr: int, block_size: int, batch_size: int, device: torch.device):
-    span = block_size * batch_size + 1
-    if ptr + span >= len(split_ids):
-        ptr = 0
-    batch = split_ids[ptr: ptr + span]
-    x = batch[:-1].view(batch_size, block_size).to(device)
-    y = batch[1:].view(batch_size, block_size).to(device)
-    return x, y, ptr + block_size * batch_size
+def get_batch(train_ids: torch.Tensor, block_size: int, batch_size: int, device: torch.device, generator: torch.Generator):
+    max_start = len(train_ids) - block_size - 1
+    starts = torch.randint(0, max_start + 1, (batch_size,), generator=generator).tolist()
+    x = torch.stack([train_ids[s : s + block_size] for s in starts]).to(device)
+    y = torch.stack([train_ids[s + 1 : s + block_size + 1] for s in starts]).to(device)
+    return x, y
 
 def iter_full_split(split_ids: torch.Tensor, block_size: int, batch_size: int, device: torch.device):
     span = block_size * batch_size + 1
@@ -328,16 +326,36 @@ def main():
         logger.emit("wandb_disabled", reason="wandb package not importable", impact="no run telemetry — Claude cannot see this run")
 
     train_titles, val_titles = get_titles(args.num_titles, args.seed, args.val_frac)
-    
+
     eos_token = "<eos>"
     tok = BPETokenizer(train_tokenizer(train_titles+val_titles, args.vocab_size, eos_token=eos_token))
-    train_text = eos_token.join(train_titles) + eos_token
     val_text = eos_token.join(val_titles) + eos_token
-    train_ids = torch.tensor(tok.encode(train_text), dtype=torch.long)
     val_ids = torch.tensor(tok.encode(val_text), dtype=torch.long)
 
-    train_eval_text = train_text[:len(val_text)]
+    # Initial train_text/train_ids build for tokenizer_info + dataset_info + max_steps.
+    # This is overwritten per-epoch in the training loop after a deterministic shuffle.
+    train_text = eos_token.join(train_titles) + eos_token
+    train_ids = torch.tensor(tok.encode(train_text), dtype=torch.long)
+
+    # train_eval slice: seeded random K headlines, ~equal char count to val_text.
+    # Built once before training; pre-loop and stable across epochs so it remains a
+    # cross-eval reference. Uses an independent RNG stream from the per-epoch shuffle.
+    slice_rng = random.Random(args.seed)
+    shuffled_for_slice = list(train_titles)
+    slice_rng.shuffle(shuffled_for_slice)
+    slice_titles, total = [], 0
+    for t in shuffled_for_slice:
+        slice_titles.append(t)
+        total += len(t) + len(eos_token)
+        if total >= len(val_text):
+            break
+    train_eval_text = eos_token.join(slice_titles) + eos_token
     train_eval_ids = torch.tensor(tok.encode(train_eval_text), dtype=torch.long)
+
+    # Persistent torch.Generator for the data loader's uniform window sampling.
+    # Seeded from args.seed so sampling sequence is reproducible across runs.
+    data_gen = torch.Generator(device='cpu')
+    data_gen.manual_seed(args.seed)
 
     chars_per_token_val = len(val_text) / len(val_ids)
     chars_per_token_train = len(train_text) / len(train_ids)
@@ -363,6 +381,13 @@ def main():
                 batches_per_epoch=batches,
                 tokens_per_epoch=len(train_ids),
                 vocab_size=tok.vocab_size)
+    logger.emit("loader_info",
+                sampling="uniform_independent",
+                per_epoch_shuffle=True,
+                slice_construction="seeded_random_headlines",
+                slice_seed=args.seed,
+                slice_chars=len(train_eval_text),
+                slice_tokens=len(train_eval_ids))
 
     cfg = GPTConfig(
         vocab_size = tok.vocab_size,
@@ -375,6 +400,25 @@ def main():
     model = GPT(cfg).to(device)
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.emit("model_info", parameters_count=model_params)
+
+    # Activation RMS taps. Three forward hooks read the residual stream amplitude at
+    # entry (post-embed/dropout), middle of the stack, and exit (post-final-LN).
+    # Hooks fire every step (compute is trivial); values are sampled into health_step
+    # events every 50 steps.
+    class RMSTaps:
+        def __init__(self):
+            self.values = {}
+        def hook(self, name):
+            def fn(module, inputs, output):
+                x = output[0] if isinstance(output, tuple) else output
+                self.values[name] = x.detach().pow(2).mean().sqrt().item()
+            return fn
+
+    taps = RMSTaps()
+    mid_idx = max(0, args.n_layer // 2 - 1)
+    model.drop.register_forward_hook(taps.hook("post_embed"))
+    model.blocks[mid_idx].register_forward_hook(taps.hook("mid_stack"))
+    model.ln_f.register_forward_hook(taps.hook("pre_head"))
 
     opt, n_decay_params, n_no_decay_params, n_decay_tensors, n_no_decay_tensors, use_fused = configure_optimizer(model, args, device)
     logger.emit("optimizer_info",
@@ -417,16 +461,44 @@ def main():
         model.train()
         return losses / len(train_eval_text)
 
-    ptr = 0
+    def evaluate_position_loss():
+        # Per-token (not per-char) val CE averaged over all val batches, broken out by
+        # sequence position. One-time diagnostic; healthy autoregressive models show
+        # a monotone-decreasing curve (later positions get more context → lower loss).
+        # Uses iter_full_split (frozen) but does not mutate evaluate()'s behavior.
+        model.eval()
+        pos_losses = torch.zeros(args.block_size, device=device)
+        n_batches = 0
+        with torch.no_grad():
+            for xb, yb in iter_full_split(val_ids, args.block_size, args.batch_size, device):
+                logits, _ = model(xb, yb)
+                B, T, V = logits.size()
+                per_token = F.cross_entropy(
+                    logits.view(-1, V), yb.view(-1), reduction='none'
+                ).view(B, T)
+                pos_losses += per_token.mean(dim=0)
+                n_batches += 1
+        model.train()
+        return (pos_losses / max(n_batches, 1)).cpu().tolist()
+
     step = 0
     best_val_loss = float("inf")
     best_step = 0
     last_train_loss = float("nan")
     t0 = time.time()
     for epoch in range(1, args.epochs + 1):
+        # Per-epoch shuffle: deterministic per (seed, epoch). Re-orders headlines
+        # before re-tokenization so cross-headline boundaries differ each epoch
+        # and the model has no fixed sweep order to memorize.
+        epoch_rng = random.Random(args.seed + epoch)
+        shuffled_titles = list(train_titles)
+        epoch_rng.shuffle(shuffled_titles)
+        train_text = eos_token.join(shuffled_titles) + eos_token
+        train_ids = torch.tensor(tok.encode(train_text), dtype=torch.long)
+
         for _ in tqdm(range(1, batches + 1), desc=f"Epoch {epoch}/{args.epochs}"):
             step += 1
-            xb, yb, ptr = get_batch(train_ids, ptr, args.block_size, args.batch_size, device)
+            xb, yb = get_batch(train_ids, args.block_size, args.batch_size, device, data_gen)
             _, loss = model(xb, yb)
             opt.zero_grad(set_to_none=True)
             loss.backward()
@@ -434,7 +506,19 @@ def main():
             lr = get_lr(step, args.lr, args.lr * args.min_lr_frac, args.warmup_steps, max_steps)
             for pg in opt.param_groups:
                 pg["lr"] = lr
+
+            # Per-group |Δp|/|p| via snapshot diff. Captures the empirical update
+            # including the AdamW weight-decay shrink. Memory: ~1× params transient,
+            # freed end-of-step.
+            pre_groups = [[p.detach().clone() for p in g["params"]] for g in opt.param_groups]
             opt.step()
+            group_ratios = []
+            for pre_list, g in zip(pre_groups, opt.param_groups):
+                upd_sq = sum((p.detach() - pre).pow(2).sum().item() for pre, p in zip(pre_list, g["params"]))
+                param_sq = sum(pre.pow(2).sum().item() for pre in pre_list)
+                group_ratios.append(math.sqrt(upd_sq / max(param_sq, 1e-12)))
+            upd_decay, upd_no_decay = group_ratios  # configure_optimizer order: [decay, no_decay]
+            upd_total = math.sqrt(sum(r * r for r in group_ratios) / len(group_ratios))
 
             last_train_loss = loss.item()
             elapsed = time.time() - t0
@@ -444,14 +528,31 @@ def main():
                         loss=last_train_loss,
                         lr=lr,
                         grad_norm=grad_norm,
+                        upd_to_param_decay=upd_decay,
+                        upd_to_param_no_decay=upd_no_decay,
+                        upd_to_param_total=upd_total,
                         elapsed_time=elapsed,
                         prnt=False)
+
+            if step == 1 or step % 50 == 0:
+                logger.emit("health_step",
+                            step=step,
+                            max_steps=max_steps,
+                            act_rms_post_embed=taps.values["post_embed"],
+                            act_rms_mid_stack=taps.values["mid_stack"],
+                            act_rms_pre_head=taps.values["pre_head"],
+                            prnt=False)
 
             if step == 1 or step % eval_interval == 0 or step == max_steps:
                 val_loss = evaluate()
                 train_eval_loss = evaluate_train()
                 with torch.no_grad():
                     weight_norm_total = math.sqrt(sum(p.detach().pow(2).sum().item() for p in model.parameters() if p.requires_grad))
+                # Update best-so-far before the emit so val_loss_best_so_far is current.
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    best_step = step
+                    save_checkpoint_atomic(model, args, step, val_loss, BEST_CKPT_PATH)
                 logger.emit("validation_step",
                             step=step,
                             max_steps=max_steps,
@@ -461,12 +562,16 @@ def main():
                             train_eval_perplexity_per_token=math.exp(train_eval_loss * (len(train_eval_text) / len(train_eval_ids))),
                             generalization_gap=val_loss - train_eval_loss,
                             weight_norm_total=weight_norm_total,
+                            val_loss_best_so_far=best_val_loss,
                             epoch=epoch,
                             elapsed_time=elapsed)
-                if val_loss < best_val_loss:
-                    best_val_loss = val_loss
-                    best_step = step
-                    save_checkpoint_atomic(model, args, step, val_loss, BEST_CKPT_PATH)
+                if step == 1:
+                    pos_losses = evaluate_position_loss()
+                    quartiles = [0, args.block_size // 4, args.block_size // 2,
+                                 3 * args.block_size // 4, args.block_size - 1]
+                    logger.emit("position_loss",
+                                step=step,
+                                **{f"pos_{q}": pos_losses[q] for q in quartiles})
 
     logger.emit("run_summary",
                 best_val_loss=best_val_loss,
