@@ -61,15 +61,33 @@ def configure_logging(log_file: str):
     )
     
     class DualLogger:
+        # structlog file is canonical; wandb metrics are derived from emit() kwargs.
+        # Numeric scalars on events that carry `step` are auto-mirrored to run.log
+        # under "{event}/{field}". One-time events (no step) stay structlog-only.
+        _WANDB_SKIP = {"step", "max_steps", "prnt"}
+
         def __init__(self, file_handler):
             self.file_handler = file_handler
             self.logger = structlog.get_logger()
-            
-        def log(self, event, **kwargs):
+            self.run = None
+
+        def set_run(self, run):
+            self.run = run
+
+        def emit(self, event, **kwargs):
             log_entry = json.dumps({"event": event, "timestamp": time.time(), **kwargs})
             self.file_handler.write(log_entry + "\n")
             self.file_handler.flush()
-            
+
+            if self.run is not None and "step" in kwargs:
+                metrics = {
+                    f"{event}/{k}": v
+                    for k, v in kwargs.items()
+                    if k not in self._WANDB_SKIP and isinstance(v, (int, float)) and not isinstance(v, bool)
+                }
+                if metrics:
+                    self.run.log(metrics, step=kwargs["step"])
+
             if kwargs.get("prnt", True):
                 if "step" in kwargs and "max_steps" in kwargs:
                     tqdm.write(f"[{kwargs.get('step'):>5}/{kwargs.get('max_steps')}] {event}: loss={kwargs.get('loss', 'N/A'):.6f} time={kwargs.get('elapsed_time', 0):.2f}s")
@@ -79,7 +97,7 @@ def configure_logging(log_file: str):
                         tqdm.write(f"{event}: {', '.join(parts)}")
                     else:
                         tqdm.write(event)
-    
+
     return DualLogger(file_handler)
 
 logger = None
@@ -247,10 +265,10 @@ def main():
     logger = configure_logging(args.log_file)
     
     hyperparams_dict = vars(args)
-    logger.log("hyperparameters_configured", **hyperparams_dict)
-    
+    logger.emit("hyperparameters_configured", **hyperparams_dict)
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    logger.log("device_info", device=device)
+    logger.emit("device_info", device=device)
 
     if WANDB_AVAILABLE:
         wandb_mode = "online" if os.environ.get("WANDB_API_KEY") else "disabled"
@@ -261,12 +279,13 @@ def main():
         )
         if wandb_mode == "online":
             wandb.save(args.log_file, base_path=".", policy="live")
-            logger.log("wandb_init", mode="online", project="mainrun-sandbox", run_id=run.id, run_url=run.url)
+            logger.emit("wandb_init", mode="online", project="mainrun-sandbox", run_id=run.id, run_url=run.url)
+            logger.set_run(run)
         else:
-            logger.log("wandb_disabled", reason="WANDB_API_KEY not set", impact="no run telemetry — Claude cannot see this run")
+            logger.emit("wandb_disabled", reason="WANDB_API_KEY not set", impact="no run telemetry — Claude cannot see this run")
     else:
         run = None
-        logger.log("wandb_disabled", reason="wandb package not importable", impact="no run telemetry — Claude cannot see this run")
+        logger.emit("wandb_disabled", reason="wandb package not importable", impact="no run telemetry — Claude cannot see this run")
 
     train_titles, val_titles = get_titles(args.num_titles, args.seed, args.val_frac)
     
@@ -280,12 +299,12 @@ def main():
     batches = len(train_ids) // (args.block_size * args.batch_size)
     max_steps = args.epochs * batches
     eval_interval = batches // args.evals_per_epoch
-    logger.log("dataset_info",
-               titles_count=len(train_titles),
-               epochs=args.epochs,
-               batches_per_epoch=batches,
-               tokens_per_epoch=len(train_ids),
-               vocab_size=tok.vocab_size)
+    logger.emit("dataset_info",
+                titles_count=len(train_titles),
+                epochs=args.epochs,
+                batches_per_epoch=batches,
+                tokens_per_epoch=len(train_ids),
+                vocab_size=tok.vocab_size)
 
     cfg = GPTConfig(
         vocab_size = tok.vocab_size,
@@ -297,7 +316,7 @@ def main():
     )
     model = GPT(cfg).to(device)
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logger.log("model_info", parameters_count=model_params)
+    logger.emit("model_info", parameters_count=model_params)
     
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.95), eps=1e-8, weight_decay=args.weight_decay)
     # opt = torch.optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -332,27 +351,22 @@ def main():
             scheduler.step()
 
             elapsed = time.time() - t0
-            logger.log("training_step",
-                      step=step,
-                      max_steps=max_steps,
-                      loss=loss.item(),
-                      elapsed_time=elapsed,
-                      prnt=False)
-            if run is not None:
-                run.log({
-                    "train/loss": loss.item(),
-                    "train/lr": scheduler.get_last_lr()[0],
-                }, step=step)
+            logger.emit("training_step",
+                        step=step,
+                        max_steps=max_steps,
+                        loss=loss.item(),
+                        lr=scheduler.get_last_lr()[0],
+                        elapsed_time=elapsed,
+                        prnt=False)
 
             if step == 1 or step % eval_interval == 0 or step == max_steps:
                 val_loss = evaluate()
-                logger.log("validation_step",
-                          step=step,
-                          max_steps=max_steps,
-                          loss=val_loss,
-                          elapsed_time=elapsed)
-                if run is not None:
-                    run.log({"val/loss": val_loss, "val/epoch": epoch}, step=step)
+                logger.emit("validation_step",
+                            step=step,
+                            max_steps=max_steps,
+                            loss=val_loss,
+                            epoch=epoch,
+                            elapsed_time=elapsed)
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     best_step = step
