@@ -2,6 +2,7 @@ import utils
 import argparse
 import math, random, time
 import os
+from contextlib import nullcontext
 from pathlib import Path
 
 import torch
@@ -51,6 +52,26 @@ def main():
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.emit("device_info", device=device)
+
+    # TF32 matmuls for any remaining fp32 ops (notably eval, which we deliberately
+    # keep in fp32). Free perf on Ampere+ with negligible quality impact at training scale.
+    # No-op on CPU.
+    if device == "cuda":
+        torch.set_float32_matmul_precision("high")
+
+    # bf16 autocast for training forward only. Eval stays fp32 to preserve val_loss
+    # measurement precision and to keep the frozen evaluate() body's numerics fixed.
+    # bf16 needs no GradScaler (unlike fp16); backward runs outside the autocast context.
+    bf16_supported = device == "cuda" and torch.cuda.is_bf16_supported()
+    use_amp = args.use_amp_bf16 and bf16_supported
+    autocast_ctx = (lambda: torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)) if use_amp else nullcontext
+    logger.emit("precision_info",
+                use_amp_bf16=use_amp,
+                requested=args.use_amp_bf16,
+                bf16_supported=bf16_supported,
+                forward_dtype="bf16" if use_amp else "fp32",
+                eval_dtype="fp32",
+                fp32_matmul_precision="high" if device == "cuda" else "default")
 
     if WANDB_AVAILABLE:
         wandb_mode = "online" if os.environ.get("WANDB_API_KEY") else "disabled"
@@ -256,7 +277,8 @@ def main():
         for _ in tqdm(range(1, batches + 1), desc=f"Epoch {epoch}/{args.epochs}"):
             step += 1
             xb, yb = get_batch(train_ids, args.block_size, args.batch_size, device, data_gen)
-            _, loss = model(xb, yb)
+            with autocast_ctx():
+                _, loss = model(xb, yb)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip).item()
