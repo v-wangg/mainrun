@@ -54,16 +54,27 @@ These rules are defined by the task spec in [`README.md`](./README.md) and are *
 
 ## Where things live
 
-- [`mainrun/train.py`](./mainrun/train.py) — the single training script. All functionality must remain accessible through `task train`.
+- [`mainrun/`](./mainrun/) — training code, split across `config.py` (Hyperparameters dataclass), `model.py` (GPT), `data.py` (loading + tokenizer), `optim.py` (AdamW + custom warmup-cosine), `telemetry.py` (structlog + wandb DualLogger), `train.py` (orchestration). All functionality must remain accessible through `task train`.
 - [`mainrun/logs/baseline.log`](./mainrun/logs/baseline.log) — Maincode's reference baseline run. Val loss 1.7545 at step 704/938.
-- [`docs/`](./docs/) — persistent project context (overview, architecture, strategy, environment, gotchas, and anything else worth keeping). At the start of any session, browse the directory and read whatever files look relevant to the task at hand; filenames will change over time.
-- [`devlogs/`](./devlogs/) — dated record of decisions, ablations, and planned work (`YYYY-MM-DD {name}.md`, one file per day per topic). At the start of any session, read recent entries unless work is trival.
+- [`docs/`](./docs/) — stable reference material only: `cloud.md` (vast.ai bring-up + wandb), `environment.md` (devcontainer + task commands), `gotchas.md` (timeless traps). State that changes with experiments lives in devlogs and code, not here.
+- [`devlogs/`](./devlogs/) — dated record of decisions, ablations, and planned work (`YYYY-MM-DD {name}.md`, one file per day per topic). This is the source of truth for *what was tried, why, and what's next*. Read recent entries at the start of any non-trivial session.
 - [`scripts/checkpoint.mjs`](./scripts/checkpoint.mjs) — Maincode-provided auto-checkpoint (commits `.` before every train). Do not modify.
 - [`scripts/submit.mjs`](./scripts/submit.mjs) — Maincode-provided submission packager. Do not modify.
+
+## Non-obvious code semantics
+
+These are stable across experiments but not recoverable by reading code alone. Re-check before changing the relevant surface:
+
+- **Validation metric is per-character, not per-token.** `evaluate()` returns `total_loss_sum / len(val_text)` where `val_text` is the raw validation *string* (with `<eos>` separators expanding to 5 characters each). More efficient tokenization → fewer summed terms → lower reported loss independent of model quality. See `docs/gotchas.md` § "Validation metric".
+- **Tokenizer is trained on `train_titles + val_titles`.** Validation text shapes the vocabulary. Not strictly target leakage but a subtle information-flow channel. Worth flagging in tokenizer ablations.
+- **Residual stream init follows GPT-2's scaled scheme.** Output projections of attention and MLP blocks are initialized with std `0.02 / sqrt(2 * n_layer)` via the `RESIDUAL_SCALE_INIT` marker pattern in `model.py`. See `devlogs/2026-05-03 scaled-residual-init.md` for rationale.
+- **`DualLogger.emit(event, step=X, **kw)` auto-mirrors numeric fields to wandb** under `{event}/{field}` keys (see `mainrun/telemetry.py`). Calling `logger.emit("training_step", step=N, loss=Y)` produces wandb metric `training_step/loss` for free; no separate `wandb.log` call needed.
 
 ## Loading context
 
 `CLAUDE.md` is an index, not a summary. Before any non-trivial task, open the relevant `docs/*.md` and recent `devlogs/*.md` files directly — don't rely on the one-line pointers above. Stale mental models are the failure mode this structure exists to prevent.
+
+Documentation discipline: `docs/` holds only content that's stable across experiments. If a fact would need updating after a successful ablation, it belongs in a devlog (with a date) and the code, not in `docs/`.
 
 ## Operational rules
 

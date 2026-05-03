@@ -19,7 +19,7 @@ Traps, anti-patterns, and submission-breaking pitfalls. Re-read before every non
 - More efficient tokenization (fewer tokens for the same text) → fewer summed terms in the numerator → lower reported loss, even if per-token NLL is identical.
 - Changing the tokenizer changes the apparent loss independent of model quality. Log tokens-per-character for every tokenizer variant so the comparison is honest.
 
-**Easy misread to avoid.** `val_text` at `mainrun/train.py:239` is a Python *string* — `eos_token.join(val_titles) + eos_token`. `val_ids` (the token tensor) is a *separate* variable at `train.py:241`. A hurried read (including one Claude explore agent made this session) can flip the two and report the metric as per-token; it is per-character. The `<eos>` separator expands to 5 literal characters inside `val_text`, so the denominator is (sum of headline char-lengths) + 5 × (n_val_titles + 1), not just the headline chars — constant across runs, but worth knowing if you ever sanity-check the number by hand.
+**Easy misread to avoid.** `val_text` (constructed in `main()` as `eos_token.join(val_titles) + eos_token`) is a Python *string*. `val_ids` (the token tensor) is a *separate* variable. A hurried read can flip the two and report the metric as per-token; it is per-character. The `<eos>` separator expands to 5 literal characters inside `val_text`, so the denominator is (sum of headline char-lengths) + 5 × (n_val_titles + 1), not just the headline chars — constant across runs, but worth knowing if you ever sanity-check the number by hand.
 
 ## Auto-checkpoint will commit everything
 
@@ -43,9 +43,9 @@ Traps, anti-patterns, and submission-breaking pitfalls. Re-read before every non
 
 `main()` currently trains the tokenizer on `train_titles + val_titles`. This means validation text shaped the vocabulary — not strictly leakage of targets, but a subtle source of information flow. Worth flagging in any tokenizer ablation; worth calling out in the report if we choose to train on train-only.
 
-## `T_max=938` hardcodes the schedule to the baseline
+## Schedule length depends on `max_steps`, which depends on data shape
 
-`CosineAnnealingLR(opt, T_max=max_steps)` where `max_steps = args.epochs * batches`. `batches` depends on `block_size`, `batch_size`, and the post-BPE `len(train_ids)`. Changing any of these changes `max_steps` and the scheduler adapts automatically — but any custom scheduler code must recompute `max_steps` the same way.
+The custom `get_lr()` in `mainrun/optim.py` is parameterized by `max_steps = args.epochs * batches`, where `batches` depends on `block_size`, `batch_size`, and the post-BPE `len(train_ids)`. Changing any of these changes `max_steps` — recompute it the same way in any scheduler variant, and re-pick `warmup_steps` proportionally rather than as a fixed integer.
 
 ## CPU-vs-GPU determinism
 
