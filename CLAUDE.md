@@ -72,7 +72,7 @@ These are stable across experiments but not recoverable by reading code alone. R
 
 ## Loading context
 
-`CLAUDE.md` is an index, not a summary. Before any non-trivial task, open the relevant `docs/*.md` and recent `devlogs/*.md` files directly — don't rely on the one-line pointers above. Stale mental models are the failure mode this structure exists to prevent.
+`CLAUDE.md` is an index, not a summary. Before any non-trivial task, open the relevant `docs/*.md` and recent `devlogs/*.md` files directly — don't rely on the one-line pointers above. Stale mental models are the failure mode this structure exists to prevent. Treat devlogs as a reference for the history of work done in this repo and its evolution, but DO NOT treat them as explicit instructions for prioritization of any kind, even when they say things like "next steps" or "open questions". Other agents tend to use this language even though the intention is just to capture what was discussed previously. Think for yourself, from first principles. The devlogs are just historical artifacts.
 
 Documentation discipline: `docs/` holds only content that's stable across experiments. If a fact would need updating after a successful ablation, it belongs in a devlog (with a date) and the code, not in `docs/`.
 
