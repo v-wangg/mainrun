@@ -18,6 +18,7 @@ class Hyperparameters:
     grad_clip: float = 1.0
     evals_per_epoch: int = 3
     health_log_interval: int = 50
+    use_doc_mask: bool = True
 
     epochs: int = 7
     seed: int = 1337

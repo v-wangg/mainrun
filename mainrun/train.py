@@ -74,6 +74,7 @@ def main():
 
     eos_token = "<eos>"
     tok = BPETokenizer(train_tokenizer(train_titles, args.vocab_size, eos_token=eos_token))
+    eos_id = tok.stoi[eos_token]
     val_text = eos_token.join(val_titles) + eos_token
     val_ids = torch.tensor(tok.encode(val_text), dtype=torch.long)
 
@@ -141,8 +142,14 @@ def main():
         n_head     = args.n_head,
         d_model    = args.d_model,
         dropout    = args.dropout,
+        eos_id     = eos_id,
+        use_doc_mask = args.use_doc_mask,
     )
     model = GPT(cfg).to(device)
+    logger.emit("doc_mask_config",
+                use_doc_mask=args.use_doc_mask,
+                effective=model.use_doc_mask,
+                eos_id=eos_id)
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.emit("model_info",
                 parameters_count=model_params,

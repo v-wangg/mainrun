@@ -13,6 +13,8 @@ class GPTConfig:
     n_head: int
     d_model: int
     dropout: float
+    eos_id: int | None = None
+    use_doc_mask: bool = True
 
 class CausalSelfAttention(nn.Module):
     def __init__(self, cfg: GPTConfig):
@@ -29,12 +31,16 @@ class CausalSelfAttention(nn.Module):
         self.resid_drop= nn.Dropout(cfg.dropout)
         self.register_buffer("tril", torch.tril(torch.ones(cfg.block_size, cfg.block_size)))
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, attn_mask: torch.Tensor | None = None):
         B, T, C = x.size()
         qkv = self.qkv(x).view(B, T, 3, self.n_head, self.head_dim).transpose(1, 3)
         q, k, v = qkv[..., 0, :, :], qkv[..., 1, :, :], qkv[..., 2, :, :] # (B, n_head, T, head_dim) each
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1))) # (B, n_head, T, T)
-        att = att.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
+        if attn_mask is not None:
+            # attn_mask: (B, T, T) bool, True = attend, False = mask. Broadcasts over heads.
+            att = att.masked_fill(~attn_mask.unsqueeze(1), float("-inf"))
+        else:
+            att = att.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
         att = F.softmax(att, dim=-1)
         att = self.attn_drop(att)
         y = att @ v # (B, n_head, T, head_dim)
@@ -62,8 +68,8 @@ class Block(nn.Module):
         self.ln2 = nn.LayerNorm(cfg.d_model)
         self.attn = CausalSelfAttention(cfg)
         self.mlp  = MLP(cfg)
-    def forward(self, x):
-        x = x + self.attn(self.ln1(x))
+    def forward(self, x, attn_mask: torch.Tensor | None = None):
+        x = x + self.attn(self.ln1(x), attn_mask=attn_mask)
         x = x + self.mlp(self.ln2(x))
         return x
 
@@ -71,6 +77,10 @@ class GPT(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
         self.cfg = cfg
+        self.eos_id = cfg.eos_id
+        # Belt-and-suspenders: if eos_id is missing, silently fall back to standard
+        # causal attention rather than crash. train.py logs the resolved state.
+        self.use_doc_mask = cfg.use_doc_mask and (cfg.eos_id is not None)
         self.token_emb = nn.Embedding(cfg.vocab_size, cfg.d_model)
         self.pos_emb   = nn.Parameter(torch.zeros(1, cfg.block_size, cfg.d_model))
         self.drop      = nn.Dropout(cfg.dropout)
@@ -102,7 +112,21 @@ class GPT(nn.Module):
         tok = self.token_emb(idx) # (B, T, d_model)
         pos = self.pos_emb[:, :T, :] # (B, T, d_model)
         x = self.drop(tok + pos)
-        for block in self.blocks: x = block(x) # (B, T, d_model)
+
+        # Document attention mask: each token attends only to tokens in the same
+        # document, where documents are separated by <eos>. Convention: <eos>
+        # belongs to its preceding document (predicted from in-headline content),
+        # and the next token starts a fresh attention island.
+        # cumsum(is_eos) - is_eos => document index that <eos> shares with its prior tokens.
+        attn_mask = None
+        if self.use_doc_mask:
+            is_eos = (idx == self.eos_id).to(torch.int32)               # (B, T)
+            doc_id = torch.cumsum(is_eos, dim=1) - is_eos               # (B, T)
+            same_doc = doc_id.unsqueeze(2) == doc_id.unsqueeze(1)       # (B, T, T)
+            causal = torch.tril(torch.ones(T, T, device=idx.device, dtype=torch.bool))
+            attn_mask = same_doc & causal                               # (B, T, T)
+
+        for block in self.blocks: x = block(x, attn_mask=attn_mask) # (B, T, d_model)
         x = self.ln_f(x)
         logits = self.head(x) # (B, T, vocab_size)
         if targets is None:
