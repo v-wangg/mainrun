@@ -73,7 +73,7 @@ def main():
     train_titles, val_titles = get_titles(args.num_titles, args.seed, args.val_frac)
 
     eos_token = "<eos>"
-    tok = BPETokenizer(train_tokenizer(train_titles+val_titles, args.vocab_size, eos_token=eos_token))
+    tok = BPETokenizer(train_tokenizer(train_titles, args.vocab_size, eos_token=eos_token))
     val_text = eos_token.join(val_titles) + eos_token
     val_ids = torch.tensor(tok.encode(val_text), dtype=torch.long)
 
