@@ -3,7 +3,7 @@ from dataclasses import dataclass
 @dataclass
 class Hyperparameters:
     block_size: int = 128
-    batch_size: int = 512
+    batch_size: int = 384
     vocab_size: int = 16_000
     n_layer: int = 6
     n_head: int = 8
