@@ -478,14 +478,34 @@ def main():
     def evaluate_train():
         model.eval()
         losses = 0.0
+        n_tokens = 0
         with torch.no_grad():
             for xb, yb in iter_full_split(train_eval_ids, args.block_size, args.batch_size, device):
                 logits, _ = model(xb, yb)
                 B, T, V = logits.size()
                 loss = F.cross_entropy(logits.view(-1, V), yb.view(-1), reduction='sum')
                 losses += loss.item()
+                n_tokens += B * T
         model.train()
-        return losses / len(train_eval_text)
+        return losses / len(train_eval_text), losses / n_tokens
+
+    def evaluate_val_per_token():
+        # evaluate() is frozen and returns per-character; this parallel pass returns
+        # per-token directly using the count of tokens that actually contributed to
+        # the loss (iter_full_split drops the tail). Avoids back-deriving via the
+        # chars_per_token ratio, which silently divides by len(val_ids) instead.
+        model.eval()
+        losses = 0.0
+        n_tokens = 0
+        with torch.no_grad():
+            for xb, yb in iter_full_split(val_ids, args.block_size, args.batch_size, device):
+                logits, _ = model(xb, yb)
+                B, T, V = logits.size()
+                loss = F.cross_entropy(logits.view(-1, V), yb.view(-1), reduction='sum')
+                losses += loss.item()
+                n_tokens += B * T
+        model.train()
+        return losses / n_tokens
 
     def evaluate_position_loss():
         # Per-token (not per-char) val CE averaged over all val batches, broken out by
@@ -575,7 +595,8 @@ def main():
 
             if step == 1 or step % eval_interval == 0 or step == max_steps:
                 val_loss = evaluate()
-                train_eval_loss = evaluate_train()
+                val_loss_per_token = evaluate_val_per_token()
+                train_eval_loss, train_eval_loss_per_token = evaluate_train()
                 with torch.no_grad():
                     weight_norm_total = math.sqrt(sum(p.detach().pow(2).sum().item() for p in model.parameters() if p.requires_grad))
                 # Update best-so-far before the emit so val_loss_best_so_far is current.
@@ -583,18 +604,17 @@ def main():
                     best_val_loss = val_loss
                     best_step = step
                     save_checkpoint_atomic(model, args, step, val_loss, BEST_CKPT_PATH)
-                chars_per_token_train_eval = len(train_eval_text) / len(train_eval_ids)
                 logger.emit("validation_step",
                             step=step,
                             max_steps=max_steps,
                             loss=val_loss,
-                            val_loss_per_token=val_loss * chars_per_token_val,
-                            val_perplexity_per_token=math.exp(val_loss * chars_per_token_val),
+                            val_loss_per_token=val_loss_per_token,
+                            val_perplexity_per_token=math.exp(val_loss_per_token),
                             train_eval_loss=train_eval_loss,
-                            train_eval_loss_per_token=train_eval_loss * chars_per_token_train_eval,
-                            train_eval_perplexity_per_token=math.exp(train_eval_loss * chars_per_token_train_eval),
+                            train_eval_loss_per_token=train_eval_loss_per_token,
+                            train_eval_perplexity_per_token=math.exp(train_eval_loss_per_token),
                             generalization_gap=val_loss - train_eval_loss,
-                            generalization_gap_per_token=(val_loss * chars_per_token_val) - (train_eval_loss * chars_per_token_train_eval),
+                            generalization_gap_per_token=val_loss_per_token - train_eval_loss_per_token,
                             weight_norm_total=weight_norm_total,
                             val_loss_best_so_far=best_val_loss,
                             epoch=epoch,
