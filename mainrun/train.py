@@ -29,6 +29,8 @@ class Hyperparameters:
     d_model: int = 512
     dropout: float = 0.1
     lr: float = 6e-3
+    adam_betas: tuple = (0.9, 0.95)
+    adam_eps: float = 1e-8
     weight_decay: float = 0.0
     evals_per_epoch: int = 3
     
@@ -318,8 +320,8 @@ def main():
     model_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.emit("model_info", parameters_count=model_params)
     
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.95), eps=1e-8, weight_decay=args.weight_decay)
-    # opt = torch.optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    # opt = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=args.adam_betas, eps=args.adam_eps, weight_decay=args.weight_decay)
+    opt = torch.optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max_steps)
 
     def evaluate():
