@@ -1,4 +1,5 @@
 import utils
+import argparse
 import math, random, time, inspect
 from dataclasses import dataclass
 import json
@@ -295,13 +296,20 @@ def get_lr(step: int, peak_lr: float, min_lr: float, warmup_steps: int, max_step
     return min_lr + coeff * (peak_lr - min_lr)
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--name", default=None,
+                        help="descriptive label for this run (sets wandb run name)")
+    cli_args = parser.parse_args()
+
     args = Hyperparameters()
     torch.manual_seed(args.seed)
     random.seed(args.seed)
-    
+
     global logger
     logger = configure_logging(args.log_file)
-    
+
+    logger.emit("run_name", name=cli_args.name)
+
     hyperparams_dict = vars(args)
     logger.emit("hyperparameters_configured", **hyperparams_dict)
 
@@ -312,6 +320,7 @@ def main():
         wandb_mode = "online" if os.environ.get("WANDB_API_KEY") else "disabled"
         run = wandb.init(
             project="mainrun-sandbox",
+            name=cli_args.name,
             config=hyperparams_dict,
             mode=wandb_mode,
         )
@@ -571,9 +580,10 @@ def main():
                     # wandb auto-mirror skips non-scalar values, so this stays
                     # structlog-only — keeps the JSON record complete without
                     # producing 128 single-point line charts in wandb.
+                    # NB: don't add scalar context kwargs here — they would auto-mirror
+                    # as one-point time-series. block_size is recoverable as len(losses).
                     logger.emit("position_loss",
                                 step=step,
-                                block_size=args.block_size,
                                 losses=pos_losses)
                     # wandb: render the curve as a single custom chart with
                     # sequence position on the x-axis. Uses run.log directly

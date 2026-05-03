@@ -15,7 +15,7 @@ tasks:
     deps: [checkpoint, download]
     dir: mainrun
     cmds:
-      - python3 train.py
+      - python3 train.py {{.CLI_ARGS}}
 
   fetch-run:
     desc: "Pull a training run's log + best checkpoint from wandb to local. Usage: task fetch-run [-- <run_id>]"
