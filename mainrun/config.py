@@ -14,7 +14,7 @@ class Hyperparameters:
     adam_eps: float = 1e-8
     weight_decay: float = 0.1
     warmup_steps: int = 20
-    min_lr_frac: float = 0.1
+    min_lr_frac: float = 0.5
     grad_clip: float = 1.0
     evals_per_epoch: int = 3
     health_log_interval: int = 50
