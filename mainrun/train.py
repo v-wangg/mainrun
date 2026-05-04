@@ -299,16 +299,9 @@ def main():
     best_step = 0
     last_train_loss = float("nan")
     t0 = time.time()
-    for epoch in range(1, args.epochs + 1):
-        # Per-epoch shuffle: deterministic per (seed, epoch). Re-orders headlines
-        # before re-tokenization so cross-headline boundaries differ each epoch
-        # and the model has no fixed sweep order to memorize.
-        epoch_rng = random.Random(args.seed + epoch)
-        shuffled_titles = list(train_titles)
-        epoch_rng.shuffle(shuffled_titles)
-        train_text = eos_token.join(shuffled_titles) + eos_token
-        train_ids = torch.tensor(tok.encode(train_text), dtype=torch.long)
 
+    def run_epoch(epoch, train_ids):
+        nonlocal step, best_val_loss, best_step, last_train_loss
         for _ in tqdm(range(1, batches + 1), desc=f"Epoch {epoch}/{args.epochs}"):
             step += 1
             xb, yb = get_batch(train_ids, args.block_size, args.batch_size, device, data_gen)
@@ -376,6 +369,18 @@ def main():
                             val_loss_best_so_far=best_val_loss,
                             epoch=epoch,
                             elapsed_time=elapsed)
+
+    for epoch in range(1, args.epochs + 1):
+        # Per-epoch shuffle: deterministic per (seed, epoch). Re-orders headlines
+        # before re-tokenization so cross-headline boundaries differ each epoch
+        # and the model has no fixed sweep order to memorize.
+        epoch_rng = random.Random(args.seed + epoch)
+        shuffled_titles = list(train_titles)
+        epoch_rng.shuffle(shuffled_titles)
+        train_text = eos_token.join(shuffled_titles) + eos_token
+        train_ids = torch.tensor(tok.encode(train_text), dtype=torch.long)
+
+        run_epoch(epoch, train_ids)
 
         samples = generate_samples()
         logger.emit("generation_sample", step=step, epoch=epoch, samples=samples, prnt=False)
