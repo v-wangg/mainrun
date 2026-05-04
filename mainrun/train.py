@@ -53,6 +53,23 @@ def save_checkpoint_atomic(model, hyperparams, step, val_loss, path):
     }, tmp)
     tmp.replace(path)
 
+def _loss_sum_and_tokens(model, ids, block_size, batch_size, device):
+    # Sum-reduction CE over a full deterministic split. Returns (loss_sum, n_tokens)
+    # so callers can divide by characters or tokens as needed. The frozen evaluate()
+    # cannot use this — its body is byte-frozen.
+    model.eval()
+    losses = 0.0
+    n_tokens = 0
+    with torch.no_grad():
+        for xb, yb in iter_full_split(ids, block_size, batch_size, device):
+            logits, _ = model(xb, yb)
+            B, T, V = logits.size()
+            loss = F.cross_entropy(logits.view(-1, V), yb.view(-1), reduction='sum')
+            losses += loss.item()
+            n_tokens += B * T
+    model.train()
+    return losses, n_tokens
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", default=None,
@@ -233,17 +250,7 @@ def main():
         return losses / len(val_text)
 
     def evaluate_train():
-        model.eval()
-        losses = 0.0
-        n_tokens = 0
-        with torch.no_grad():
-            for xb, yb in iter_full_split(train_eval_ids, args.block_size, args.batch_size, device):
-                logits, _ = model(xb, yb)
-                B, T, V = logits.size()
-                loss = F.cross_entropy(logits.view(-1, V), yb.view(-1), reduction='sum')
-                losses += loss.item()
-                n_tokens += B * T
-        model.train()
+        losses, n_tokens = _loss_sum_and_tokens(model, train_eval_ids, args.block_size, args.batch_size, device)
         return losses / len(train_eval_text), losses / n_tokens
 
     def evaluate_val_per_token():
@@ -251,17 +258,7 @@ def main():
         # per-token directly using the count of tokens that actually contributed to
         # the loss (iter_full_split drops the tail). Avoids back-deriving via the
         # chars_per_token ratio, which silently divides by len(val_ids) instead.
-        model.eval()
-        losses = 0.0
-        n_tokens = 0
-        with torch.no_grad():
-            for xb, yb in iter_full_split(val_ids, args.block_size, args.batch_size, device):
-                logits, _ = model(xb, yb)
-                B, T, V = logits.size()
-                loss = F.cross_entropy(logits.view(-1, V), yb.view(-1), reduction='sum')
-                losses += loss.item()
-                n_tokens += B * T
-        model.train()
+        losses, n_tokens = _loss_sum_and_tokens(model, val_ids, args.block_size, args.batch_size, device)
         return losses / n_tokens
 
     # Generation sanity-check: end-of-epoch sample of `gen_num_samples` cold continuations
