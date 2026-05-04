@@ -18,7 +18,7 @@ OUT_DIR = REPO_ROOT / "docs" / "images"
 
 CASCADE = [
     # (label, loss, kind) — kind: "baseline", "step" (cumulative-best), "ablation" (control)
-    ("Baseline reprod",         1.7987, "baseline"),
+    ("Baseline reprod",         1.7545, "baseline"),
     ("AdamW + warmup",          1.4293, "step"),
     ("Stochastic dataloader",   1.4357, "step"),
     ("Scaled residual init",    1.3769, "step"),
@@ -29,7 +29,6 @@ CASCADE = [
     ("GPT-4 pre-tok",           1.0670, "step"),
     ("− Doc mask (ablation)",   1.0848, "ablation"),
 ]
-CPU_BASELINE_REF = 1.7545
 
 
 def _bar_color(delta: float | None, kind: str) -> str:
@@ -75,13 +74,6 @@ def make_figure_1(out_path: Path) -> None:
     ax.set_yticklabels(labels, fontsize=11)
     ax.invert_yaxis()
 
-    ax.axvline(CPU_BASELINE_REF, color="#888888", linestyle="--", linewidth=1, zorder=0)
-    ax.text(
-        CPU_BASELINE_REF, len(labels) - 0.3,
-        f"  CPU reference baseline ({CPU_BASELINE_REF})",
-        ha="left", va="center", fontsize=9, color="#666666",
-    )
-
     for i, (loss, delta) in enumerate(zip(losses, deltas)):
         if delta is None:
             label = f"{loss:.4f}"
@@ -93,7 +85,7 @@ def make_figure_1(out_path: Path) -> None:
     ax.set_xlabel("Per-character validation loss", fontsize=11)
     ax.set_xlim(1.0, 2.05)
     ax.set_title(
-        "Ablation cascade (chronological, cumulative-best)",
+        "Intervention cascade (chronological, cumulative-best)",
         fontsize=12, pad=14, loc="left",
     )
 
