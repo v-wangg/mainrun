@@ -134,3 +134,18 @@ class GPT(nn.Module):
         else:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), reduction='mean')
         return logits, loss
+
+    @torch.no_grad()
+    def generate(self, idx: torch.Tensor, max_new_tokens: int, temperature: float = 1.0,
+                 top_k: int | None = None, generator: torch.Generator | None = None) -> torch.Tensor:
+        for _ in range(max_new_tokens):
+            idx_cond = idx if idx.size(1) <= self.cfg.block_size else idx[:, -self.cfg.block_size:]
+            logits, _ = self(idx_cond)
+            logits = logits[:, -1, :] / max(temperature, 1e-8)
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits = logits.masked_fill(logits < v[:, [-1]], float("-inf"))
+            probs = F.softmax(logits, dim=-1)
+            next_id = torch.multinomial(probs, num_samples=1, generator=generator)
+            idx = torch.cat((idx, next_id), dim=1)
+        return idx

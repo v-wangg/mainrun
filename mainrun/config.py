@@ -18,8 +18,13 @@ class Hyperparameters:
     grad_clip: float = 1.0
     evals_per_epoch: int = 3
     health_log_interval: int = 50
-    use_doc_mask: bool = False
+    use_doc_mask: bool = True
     use_amp_bf16: bool = True
+
+    gen_num_samples: int = 4
+    gen_max_new_tokens: int = 32
+    gen_top_k: int = 50
+    gen_temperature: float = 1.0
 
     epochs: int = 7
     seed: int = 1337

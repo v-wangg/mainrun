@@ -260,6 +260,24 @@ def main():
         model.train()
         return losses / n_tokens
 
+    # Generation sanity-check: end-of-epoch sample of `gen_num_samples` cold continuations
+    # from a single bare-<eos> prompt. Reset gen_rng to args.seed at every call so the
+    # multinomial draws are identical across epochs given the same logits — any cross-epoch
+    # difference in samples is then attributable to model weights, not RNG drift.
+    gen_rng = torch.Generator(device=device)
+    SAMPLE_COLS = ["step", "epoch", "sample_idx", "completion"]
+    sample_rows = []
+
+    def generate_samples():
+        gen_rng.manual_seed(args.seed)
+        prompt_ids = torch.full((args.gen_num_samples, 1), eos_id, dtype=torch.long, device=device)
+        model.eval()
+        out = model.generate(prompt_ids, args.gen_max_new_tokens,
+                             temperature=args.gen_temperature, top_k=args.gen_top_k,
+                             generator=gen_rng)
+        model.train()
+        return [tok.decode(out[i, 1:].tolist()) for i in range(out.size(0))]
+
     step = 0
     best_val_loss = float("inf")
     best_step = 0
@@ -349,6 +367,16 @@ def main():
                             val_loss_best_so_far=best_val_loss,
                             epoch=epoch,
                             elapsed_time=elapsed)
+
+        samples = generate_samples()
+        logger.emit("generation_sample", step=step, epoch=epoch, samples=samples, prnt=False)
+        for i, s in enumerate(samples):
+            tqdm.write(f"  epoch {epoch} sample {i}: {s!r}")
+        if run is not None:
+            for i, s in enumerate(samples):
+                sample_rows.append([step, epoch, i, s])
+            run.log({"samples": wandb.Table(columns=SAMPLE_COLS, data=list(sample_rows))}, step=step)
+
     logger.emit("run_summary",
                 best_val_loss=best_val_loss,
                 best_step=best_step,
