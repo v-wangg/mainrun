@@ -53,6 +53,18 @@ def save_checkpoint_atomic(model, hyperparams, step, val_loss, path):
     }, tmp)
     tmp.replace(path)
 
+def compute_update_ratios(opt, pre_groups):
+    # Per-group |Δp|/|p| via snapshot diff. Captures the empirical update
+    # including the AdamW weight-decay shrink. configure_optimizer order: [decay, no_decay].
+    group_ratios = []
+    for pre_list, g in zip(pre_groups, opt.param_groups):
+        upd_sq = sum((p.detach() - pre).pow(2).sum().item() for pre, p in zip(pre_list, g["params"]))
+        param_sq = sum(pre.pow(2).sum().item() for pre in pre_list)
+        group_ratios.append(math.sqrt(upd_sq / max(param_sq, 1e-12)))
+    upd_decay, upd_no_decay = group_ratios
+    upd_total = math.sqrt(sum(r * r for r in group_ratios) / len(group_ratios))
+    return upd_decay, upd_no_decay, upd_total
+
 def _loss_sum_and_tokens(model, ids, block_size, batch_size, device):
     # Sum-reduction CE over a full deterministic split. Returns (loss_sum, n_tokens)
     # so callers can divide by characters or tokens as needed. The frozen evaluate()
@@ -306,18 +318,11 @@ def main():
             for pg in opt.param_groups:
                 pg["lr"] = lr
 
-            # Per-group |Δp|/|p| via snapshot diff. Captures the empirical update
-            # including the AdamW weight-decay shrink. Memory: ~1× params transient,
-            # freed end-of-step.
+            # Snapshot before opt.step(); diffed after to compute |Δp|/|p| per group.
+            # Memory: ~1× params transient, freed end-of-step.
             pre_groups = [[p.detach().clone() for p in g["params"]] for g in opt.param_groups]
             opt.step()
-            group_ratios = []
-            for pre_list, g in zip(pre_groups, opt.param_groups):
-                upd_sq = sum((p.detach() - pre).pow(2).sum().item() for pre, p in zip(pre_list, g["params"]))
-                param_sq = sum(pre.pow(2).sum().item() for pre in pre_list)
-                group_ratios.append(math.sqrt(upd_sq / max(param_sq, 1e-12)))
-            upd_decay, upd_no_decay = group_ratios  # configure_optimizer order: [decay, no_decay]
-            upd_total = math.sqrt(sum(r * r for r in group_ratios) / len(group_ratios))
+            upd_decay, upd_no_decay, upd_total = compute_update_ratios(opt, pre_groups)
 
             last_train_loss = loss.item()
             elapsed = time.time() - t0
