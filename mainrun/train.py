@@ -53,6 +53,21 @@ def save_checkpoint_atomic(model, hyperparams, step, val_loss, path):
     }, tmp)
     tmp.replace(path)
 
+def build_train_eval_slice(train_titles, target_chars: int, eos_token: str, seed: int) -> str:
+    # Seeded random K headlines, ~equal char count to target. Built once before
+    # training and stable across epochs so it stays a cross-eval reference. Uses
+    # an independent RNG stream from the per-epoch shuffle.
+    rng = random.Random(seed)
+    shuffled = list(train_titles)
+    rng.shuffle(shuffled)
+    slice_titles, total = [], 0
+    for t in shuffled:
+        slice_titles.append(t)
+        total += len(t) + len(eos_token)
+        if total >= target_chars:
+            break
+    return eos_token.join(slice_titles) + eos_token
+
 def compute_update_ratios(opt, pre_groups):
     # Per-group |Δp|/|p| via snapshot diff. Captures the empirical update
     # including the AdamW weight-decay shrink. configure_optimizer order: [decay, no_decay].
@@ -154,19 +169,7 @@ def main():
     train_text = eos_token.join(train_titles) + eos_token
     train_ids = torch.tensor(tok.encode(train_text), dtype=torch.long)
 
-    # train_eval slice: seeded random K headlines, ~equal char count to val_text.
-    # Built once before training; pre-loop and stable across epochs so it remains a
-    # cross-eval reference. Uses an independent RNG stream from the per-epoch shuffle.
-    slice_rng = random.Random(args.seed)
-    shuffled_for_slice = list(train_titles)
-    slice_rng.shuffle(shuffled_for_slice)
-    slice_titles, total = [], 0
-    for t in shuffled_for_slice:
-        slice_titles.append(t)
-        total += len(t) + len(eos_token)
-        if total >= len(val_text):
-            break
-    train_eval_text = eos_token.join(slice_titles) + eos_token
+    train_eval_text = build_train_eval_slice(train_titles, len(val_text), eos_token, args.seed)
     train_eval_ids = torch.tensor(tok.encode(train_eval_text), dtype=torch.long)
 
     # Persistent torch.Generator for the data loader's uniform window sampling.
