@@ -20,6 +20,27 @@ logger = None
 
 BEST_CKPT_PATH = Path("checkpoints/best.pt")
 
+class RMSTaps:
+    # Activation RMS taps. Forward hooks read the residual stream amplitude at
+    # entry (post-embed/dropout), middle of the stack, and exit (post-final-LN).
+    # Hooks fire every step (compute is trivial); values are sampled into health_step
+    # events at args.health_log_interval cadence.
+    def __init__(self):
+        self.values = {}
+    def hook(self, name):
+        def fn(module, inputs, output):
+            x = output[0] if isinstance(output, tuple) else output
+            self.values[name] = x.detach().pow(2).mean().sqrt().item()
+        return fn
+
+def register_rms_taps(model, n_layer: int) -> RMSTaps:
+    taps = RMSTaps()
+    mid_idx = max(0, n_layer // 2 - 1)
+    model.drop.register_forward_hook(taps.hook("post_embed"))
+    model.blocks[mid_idx].register_forward_hook(taps.hook("mid_stack"))
+    model.ln_f.register_forward_hook(taps.hook("pre_head"))
+    return taps
+
 def save_checkpoint_atomic(model, hyperparams, step, val_loss, path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -180,24 +201,7 @@ def main():
                 residual_std=0.02 * (2 * args.n_layer) ** -0.5,
                 n_residual_proj=model.n_residual_proj)
 
-    # Activation RMS taps. Three forward hooks read the residual stream amplitude at
-    # entry (post-embed/dropout), middle of the stack, and exit (post-final-LN).
-    # Hooks fire every step (compute is trivial); values are sampled into health_step
-    # events every args.health_log_interval steps.
-    class RMSTaps:
-        def __init__(self):
-            self.values = {}
-        def hook(self, name):
-            def fn(module, inputs, output):
-                x = output[0] if isinstance(output, tuple) else output
-                self.values[name] = x.detach().pow(2).mean().sqrt().item()
-            return fn
-
-    taps = RMSTaps()
-    mid_idx = max(0, args.n_layer // 2 - 1)
-    model.drop.register_forward_hook(taps.hook("post_embed"))
-    model.blocks[mid_idx].register_forward_hook(taps.hook("mid_stack"))
-    model.ln_f.register_forward_hook(taps.hook("pre_head"))
+    taps = register_rms_taps(model, args.n_layer)
 
     opt, n_decay_params, n_no_decay_params, n_decay_tensors, n_no_decay_tensors, use_fused = configure_optimizer(model, args, device)
     logger.emit("optimizer_info",
