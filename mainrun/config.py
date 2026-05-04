@@ -5,10 +5,10 @@ class Hyperparameters:
     block_size: int = 128
     batch_size: int = 256
     vocab_size: int = 16_000
-    n_layer: int = 8
+    n_layer: int = 6
     n_head: int = 8
     d_model: int = 512
-    dropout: float = 0.2
+    dropout: float = 0.0
     lr: float = 2e-3
     adam_betas: tuple = (0.9, 0.95)
     adam_eps: float = 1e-8

@@ -128,6 +128,7 @@ def main():
     chars_per_token_train = len(train_text) / len(train_ids)
     logger.emit("tokenizer_info",
                 vocab_size=tok.vocab_size,
+                pretokenizer="cl100k_regex+bytelevel",
                 train_text_chars=len(train_text),
                 val_text_chars=len(val_text),
                 train_tokens=len(train_ids),
